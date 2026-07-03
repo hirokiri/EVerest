@@ -6,10 +6,15 @@
 #include <everest_api_types/generic/string.hpp>
 #include <everest_api_types/system/API.hpp>
 #include <everest_api_types/system/codec.hpp>
+#include <everest_api_types/system/json_codec.hpp>
 #include <everest_api_types/system/wrapper.hpp>
 #include <everest_api_types/utilities/codec.hpp>
 
+#include <nlohmann/json.hpp>
+
 #include <everest/logging.hpp>
+
+#include <vector>
 
 namespace module {
 
@@ -32,6 +37,8 @@ void system_API::ready() {
 
     generate_api_var_firmware_update_status();
     generate_api_var_log_status();
+    generate_api_var_configure_network_status();
+    generate_api_var_network_interfaces();
 
     helper.generate_api_var_communication_check(&comm_check);
     comm_check.start(config.cfg_communication_check_to_s);
@@ -58,6 +65,39 @@ void system_API::generate_api_var_log_status() {
             return true;
         }
         return false;
+    });
+}
+
+void system_API::generate_api_var_configure_network_status() {
+    helper.subscribe_api_topic("configure_network_status", [this](std::string const& data) {
+        API_types_ext::ConfigureNetworkStatus payload;
+        if (deserialize(data, payload)) {
+            p_main->publish_configure_network_status(to_internal_api(payload));
+            return true;
+        }
+        return false;
+    });
+}
+
+void system_API::generate_api_var_network_interfaces() {
+    // network_interfaces is an array; parse and convert each element (no single-shot deserialize for vectors).
+    helper.subscribe_api_topic("network_interfaces", [this](std::string const& data) {
+        auto parsed = nlohmann::json::parse(data);
+        if (!parsed.is_array()) {
+            return false; // fail closed; helper logs topic + payload
+        }
+        std::vector<types::network::NetworkInterfaceStatus> interfaces;
+        for (std::size_t i = 0; i < parsed.size(); ++i) {
+            try {
+                interfaces.push_back(to_internal_api(parsed.at(i).get<API_types_ext::NetworkInterfaceStatus>()));
+            } catch (std::exception const& e) {
+                EVLOG_warning << "network_interfaces element " << i << " invalid: " << e.what() << "\n"
+                              << parsed.at(i).dump();
+                return false; // no partial publish
+            }
+        }
+        p_main->publish_network_interfaces(interfaces);
+        return true;
     });
 }
 
