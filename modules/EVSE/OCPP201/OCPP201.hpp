@@ -30,6 +30,8 @@
 
 // ev@4bf81b14-a215-475c-a1d3-0a484ae48918:v1
 // insert your custom include headers here
+#include <future>
+#include <map>
 #include <queue>
 #include <tuple>
 #include <variant>
@@ -151,6 +153,14 @@ private:
     std::map<int32_t, std::vector<types::iso15118::EnergyTransferMode>> evse_supported_energy_transfer_modes;
     std::map<int32_t, bool> evse_service_renegotiation_supported;
     everest::lib::util::monitor<std::map<int32_t, std::string>> evse_evcc_id;
+    // Pending configure_network requests, keyed by a unique request_id (not configuration_slot, which
+    // repeats across libocpp's per-slot retries). The stored slot lets a re-request drop the stale attempt.
+    struct PendingNetworkConfigRequest {
+        int32_t configuration_slot;
+        std::promise<ocpp::ConfigNetworkResult> promise;
+    };
+    int32_t next_network_config_request_id{1}; // guarded by the monitor lock below
+    everest::lib::util::monitor<std::map<int32_t, PendingNetworkConfigRequest>> pending_network_config_requests;
     std::atomic<ocpp::OcppProtocolVersion> ocpp_protocol_version{ocpp::OcppProtocolVersion::Unknown};
     int32_t event_id_counter{0};
     std::mutex session_event_mutex;
@@ -161,6 +171,10 @@ private:
     std::atomic<bool> recompute_pending{false};
     EventQueue event_queue;
     MREC_ERROR_MAP_TYPE mrec_error_map;
+    // Pop-and-set discipline for configure_network promises: find the pending request keyed by \p request_id
+    // under the monitor lock, move the promise out and erase it while holding the lock, then release the lock
+    // and only THEN call set_value. First popper wins; if the entry is already gone this is a no-op.
+    void fulfill_network_request(int32_t request_id, const ocpp::ConfigNetworkResult& result);
     void init_evse_maps();
     void init_evse_subscriptions();
     void init_module_configuration();

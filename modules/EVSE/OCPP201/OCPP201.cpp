@@ -4,6 +4,7 @@
 
 #include <fmt/core.h>
 #include <fstream>
+#include <thread>
 
 #include <websocketpp_utils/uri.hpp>
 
@@ -380,6 +381,22 @@ ocpp::v2::ChargingRateUnitEnum get_unit_or_default(const std::string& unit_strin
     }
 }
 
+void OCPP201::fulfill_network_request(int32_t request_id, const ocpp::ConfigNetworkResult& result) {
+    std::promise<ocpp::ConfigNetworkResult> promise;
+    {
+        auto handle = this->pending_network_config_requests.handle();
+        auto it = handle->find(request_id);
+        if (it == handle->end()) {
+            EVLOG_debug << "no pending network request for id " << request_id << " - late/orphaned";
+            return;
+        }
+        promise = std::move(it->second.promise);
+        handle->erase(it);
+    }
+    // set_value outside the lock
+    promise.set_value(result);
+}
+
 void OCPP201::init() {
     invoke_init(*p_auth_provider);
     invoke_init(*p_auth_validator);
@@ -444,6 +461,18 @@ void OCPP201::init() {
             std::scoped_lock lock(this->session_event_mutex);
             this->event_queue[0].push(status);
         }
+    });
+
+    r_system->subscribe_configure_network_status([this](const types::network::ConfigureNetworkStatus status) {
+        if (status.status != types::network::ConfigureNetworkStatusEnum::Ready) {
+            EVLOG_warning << "configure_network_status for request_id " << status.request_id << " reported "
+                          << types::network::configure_network_status_enum_to_string(status.status)
+                          << "; treating as failure";
+        }
+        ocpp::ConfigNetworkResult result{};
+        result.success = (status.status == types::network::ConfigureNetworkStatusEnum::Ready);
+        result.interface_address = status.interface_address;
+        this->fulfill_network_request(status.request_id, result);
     });
 
     r_system->subscribe_log_status([this](types::system::LogStatus status) {
@@ -742,9 +771,64 @@ void OCPP201::ready() {
         [this](const int32_t configuration_slot, const ocpp::v2::NetworkConnectionProfile& network_connection_profile) {
             std::promise<ocpp::ConfigNetworkResult> promise;
             std::future<ocpp::ConfigNetworkResult> future = promise.get_future();
-            ocpp::ConfigNetworkResult result;
-            result.success = true;
-            promise.set_value(result);
+
+            // Register under a fresh unique id; drop any still-pending attempt for the same slot.
+            int32_t request_id;
+            {
+                auto handle = this->pending_network_config_requests.handle();
+                for (auto it = handle->begin(); it != handle->end();) {
+                    if (it->second.configuration_slot == configuration_slot) {
+                        it = handle->erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                request_id = this->next_network_config_request_id++;
+                (*handle)[request_id] = PendingNetworkConfigRequest{configuration_slot, std::move(promise)};
+            }
+
+            // Detached so libocpp's thread never blocks on the MQTT round-trip; profile copied (the ref dangles).
+            std::thread([this, request_id, configuration_slot, profile = network_connection_profile]() {
+                try {
+                    const auto request = conversions::to_everest_configure_network_request(request_id, profile);
+                    const auto response = this->r_system->call_configure_network(request);
+
+                    ocpp::ConfigNetworkResult result{};
+                    bool fulfill = true;
+                    switch (response.status) {
+                    case types::network::ConfigureNetworkStatusEnum::Ready:
+                        result.success = true;
+                        result.interface_address = response.interface_address;
+                        break;
+                    case types::network::ConfigureNetworkStatusEnum::Failed:
+                    case types::network::ConfigureNetworkStatusEnum::Rejected:
+                        result.success = false;
+                        break;
+                    case types::network::ConfigureNetworkStatusEnum::NotSupported:
+                        // legacy parity: connect as before, no interface_address
+                        result.success = true;
+                        break;
+                    case types::network::ConfigureNetworkStatusEnum::Processing:
+                        fulfill = false; // subscription fulfills it later
+                        break;
+                    default:
+                        result.success = false;
+                        EVLOG_error << "Unexpected configure_network status for slot " << configuration_slot
+                                    << " (request_id " << request_id << ")";
+                        break;
+                    }
+                    if (fulfill) {
+                        this->fulfill_network_request(request_id, result);
+                    }
+                } catch (const std::exception& e) {
+                    EVLOG_error << "call_configure_network threw for slot " << configuration_slot << " (request_id "
+                                << request_id << ", " << e.what() << ")";
+                    ocpp::ConfigNetworkResult result{};
+                    result.success = false;
+                    this->fulfill_network_request(request_id, result);
+                }
+            }).detach();
+
             return future;
         };
 

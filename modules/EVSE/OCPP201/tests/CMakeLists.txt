@@ -14,7 +14,9 @@ target_sources(${TEST_TARGET_NAME}
     PRIVATE
     error_handling_tests.cpp
     ocpp_conversions_test.cpp
+    network_conversions_test.cpp
     transaction_handler_tests.cpp
+    ../conversions.cpp
     ../error_handling.cpp
     ../transaction_handler.cpp
 )
@@ -27,6 +29,7 @@ target_compile_definitions(${TEST_TARGET_NAME}
 target_link_libraries(${TEST_TARGET_NAME}
     PRIVATE
     everest::ocpp
+    everest::ocpp_conversions
     everest::framework
     nlohmann_json::nlohmann_json
     GTest::gtest_main
