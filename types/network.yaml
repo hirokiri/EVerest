@@ -54,25 +54,22 @@ types:
     additionalProperties: false
     required:
       - server
-      - user
-      - password
-      - key
       - type
     properties:
       server:
         description: VPN server address
         type: string
       user:
-        description: VPN username
+        description: VPN username, if required by the VPN type
         type: string
       group:
         description: VPN group
         type: string
       password:
-        description: VPN password
+        description: VPN password, if required by the VPN type
         type: string
       key:
-        description: VPN shared secret
+        description: VPN shared secret or key, if required by the VPN type
         type: string
       type:
         description: Type of VPN
@@ -82,6 +79,7 @@ types:
           - IPSec
           - L2TP
           - PPTP
+          - Other
   ConfigureNetworkRequest:
     description: Request to prepare a network interface for use
     type: object
