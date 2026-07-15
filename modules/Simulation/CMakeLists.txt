@@ -1,4 +1,5 @@
 ev_add_module(DCSupplySimulator)
+ev_add_module(EvseManagerSimulator)
 ev_add_module(IMDSimulator)
 ev_add_module(OVMSimulator)
 ev_add_module(SlacSimulator)
