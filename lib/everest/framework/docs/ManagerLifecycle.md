@@ -1,8 +1,6 @@
 # Manager lifecycle state machine
 
 State machine diagram: [`ManagerLifecycleStateMachine.mmd`](ManagerLifecycleStateMachine.mmd)
-(renders on GitHub/GitLab, in the VS Code Mermaid preview, or via
-`npx -y @mermaid-js/mermaid-cli -i ManagerLifecycleStateMachine.mmd -o ManagerLifecycleStateMachine.svg`).
 
 `ManagerState` (defined in `src/manager.hpp`) is the **phase** of the main-loop (what the manager
 is doing right now). `ShutdownCause` records **why** a shutdown or drain was started; it is kept
