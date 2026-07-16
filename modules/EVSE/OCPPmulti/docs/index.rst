@@ -489,3 +489,161 @@ the Plug&Charge extension implemented via **DataTransfer.req** messages.
 In addition, the charging station periodically (by default every seven days) updates the OCSP responses of the sub-CA
 certificates of the V2G certificate chain. The cached OCSP response can be used as part of the ISO 15118 TLS
 handshake with EVs. An update is attempted at every startup and then on the periodic interval.
+
+Configuration access
+====================
+
+OCPP configuration can be read, written and monitored through two channels:
+
+- **EVerest modules**: require the ``ocpp`` interface and call
+  ``call_get_variables`` / ``call_set_variables`` / ``call_monitor_variables``;
+  subscribe ``event_data`` for monitor notifications.
+- **External integrations** (web interface, configuration tools): MQTT via
+  ``ocpp_consumer_API``. Requests are published to
+  ``everest_api/1/ocpp_consumer/<module_id>/m2e/get_variables`` (and
+  ``.../m2e/set_variables``, ``.../m2e/monitor_variables``); replies follow the
+  AsyncAPI request/reply pattern defined in
+  ``docs/source/reference/EVerest_API/ocpp_consumer_API.yaml``.
+
+Addressing and semantics are identical on both channels, and identical
+regardless of whether OCPP 1.6 or 2.x is active.
+
+Reading and writing (canonical form)
+------------------------------------
+
+Read (``get_variables``):
+
+.. code-block:: json
+
+   {"items": [
+     {"component_variable": {"component": {"name": "OCPPCommCtrlr"}, "variable": {"name": "HeartbeatInterval"}}}
+   ]}
+
+Write (``set_variables``):
+
+.. code-block:: json
+
+   {"variables": {"items": [
+     {"component_variable": {"component": {"name": "OCPPCommCtrlr"}, "variable": {"name": "HeartbeatInterval"}},
+      "value": "300"}
+   ]}, "source": "webinterface"}
+
+Results echo the requested ``component_variable`` and carry a status:
+``Accepted``, ``RebootRequired`` (writes only; persisted; takes effect on next
+(re)connect or reboot), ``Rejected`` (with ``statusInfo`` explaining why and, where
+applicable, what to use instead), ``UnknownComponent`` / ``UnknownVariable``,
+or ``NotSupportedAttributeType``.
+
+Addressing rules:
+
+- Standard OCPP 2.x variables: their standard component (``OCPPCommCtrlr``,
+  ``SecurityCtrlr``, ...). Works for the same datum in both protocol modes.
+- 1.6-only/vendor keys: component ``OCPP16LegacyCtrlr``, variable = key name.
+- Custom-mapped keys (station-specific YAML): the mapped component/variable
+  from the mapping file.
+- The deprecation warning emitted for legacy requests names the canonical
+  address for each key in use — the simplest migration discovery mechanism.
+
+Changing OCPP connection details
+--------------------------------
+
+Connection settings live in network profile **slots**, addressed as component
+``NetworkConfiguration`` with the slot number as component ``instance``. Both
+protocol stacks read this same representation (shared connectivity manager),
+so the workflow below is identical for OCPP 1.6 and 2.x.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Setting
+     - Component
+     - Variable
+   * - CSMS endpoint URL
+     - ``NetworkConfiguration`` / instance ``<slot>``
+     - ``OcppCsmsUrl``
+   * - Security profile (1–3)
+     - ``NetworkConfiguration`` / instance ``<slot>``
+     - ``SecurityProfile``
+   * - Basic-auth password (AuthorizationKey)
+     - ``NetworkConfiguration`` / instance ``<slot>``
+     - ``BasicAuthPassword`` (write-only)
+   * - Charge point identity
+     - ``NetworkConfiguration`` / instance ``<slot>``
+     - ``Identity``
+   * - OCPP version of the profile
+     - ``NetworkConfiguration`` / instance ``<slot>``
+     - ``OcppVersion``
+   * - Slot priority order (activation selector)
+     - ``OCPPCommCtrlr``
+     - ``NetworkConfigurationPriority`` (ReadWrite)
+   * - Currently active slot (report only)
+     - ``OCPPCommCtrlr``
+     - ``ActiveNetworkProfile`` (ReadOnly)
+
+Workflow — prepare a profile (here: slot 2), then activate it:
+
+.. code-block:: json
+
+   {"variables": {"items": [
+     {"component_variable": {"component": {"name": "NetworkConfiguration", "instance": "2"},
+                             "variable": {"name": "OcppCsmsUrl"}},
+      "value": "wss://csms.example.com/ocpp"},
+     {"component_variable": {"component": {"name": "NetworkConfiguration", "instance": "2"},
+                             "variable": {"name": "SecurityProfile"}},
+      "value": "2"},
+     {"component_variable": {"component": {"name": "NetworkConfiguration", "instance": "2"},
+                             "variable": {"name": "BasicAuthPassword"}},
+      "value": "0123456789abcdef"}
+   ]}, "source": "webinterface"}
+
+then activate it by putting slot 2 first in the priority order:
+
+.. code-block:: json
+
+   {"variables": {"items": [
+     {"component_variable": {"component": {"name": "OCPPCommCtrlr"}, "variable": {"name": "NetworkConfigurationPriority"}},
+      "value": "2,1"}
+   ]}, "source": "webinterface"}
+
+Each of these returns ``RebootRequired``: the values are validated and
+persisted immediately and take effect on the next (re)connect or reboot.
+Editing the currently active slot in place is equally allowed (same
+``RebootRequired`` semantics). ``BasicAuthPassword`` is write-only — reads do
+not return it. ``ActiveNetworkProfile`` reports which slot is in use and is
+ReadOnly (per OCPP 2.x); writes to it are rejected by mutability in both
+modes. In v16 mode this workflow is semantically equivalent to the legacy
+``CentralSystemURI`` / ``SecurityProfile`` / ``AuthorizationKey`` key writes,
+which remain available (deprecated) and operate on the active slot.
+
+Monitoring configuration changes
+--------------------------------
+
+``monitor_variables`` with canonical addresses; changes are published on
+``event_data`` with the same ``component_variable`` used at registration:
+
+.. code-block:: json
+
+   {"items": [
+     {"component": {"name": "OCPPCommCtrlr"}, "variable": {"name": "HeartbeatInterval"}}
+   ]}
+
+Legacy-form registrations (empty component name) receive legacy-shaped events.
+Registrations are additive across calls.
+
+Migration from OCPP 1.6 key addressing
+======================================
+
+Existing 1.6 integrations keep working in v16 mode: empty component name,
+``variable.name`` = configuration key.
+
+.. code-block:: json
+
+   {"items": [
+     {"component_variable": {"component": {"name": ""}, "variable": {"name": "HeartbeatInterval"}}}
+   ]}
+
+The first use of each key logs a deprecation warning naming the canonical
+address. This form is not accepted when OCPP 2.x is active (returns
+``UnknownComponent``) and will be removed per the deprecation policy — migrate
+to canonical addressing. Requests with a non-empty component name are never
+reinterpreted as configuration keys.
