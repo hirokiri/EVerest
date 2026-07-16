@@ -493,20 +493,23 @@ handshake with EVs. An update is attempted at every startup and then on the peri
 Configuration access
 ====================
 
-OCPP configuration can be read, written and monitored through two channels:
+OCPP configuration can be read, written and monitored through three channels:
 
+- **CSMS**: via the OCPP protocol itself — ``GetVariables`` /
+  ``SetVariables`` / ``SetVariableMonitoring`` in OCPP 2.x,
+  ``GetConfiguration`` / ``ChangeConfiguration`` in OCPP 1.6.
 - **EVerest modules**: require the ``ocpp`` interface and call
   ``call_get_variables`` / ``call_set_variables`` / ``call_monitor_variables``;
   subscribe ``event_data`` for monitor notifications.
-- **External integrations** (web interface, configuration tools): MQTT via
-  ``ocpp_consumer_API``. Requests are published to
-  ``everest_api/1/ocpp_consumer/<module_id>/m2e/get_variables`` (and
-  ``.../m2e/set_variables``, ``.../m2e/monitor_variables``); replies follow the
-  AsyncAPI request/reply pattern defined in
-  ``docs/source/reference/EVerest_API/ocpp_consumer_API.yaml``.
+- **External integrations** (web interface, configuration tools): the
+  ``ocpp_consumer_API``; see its own documentation for transport and message
+  details.
 
-Addressing and semantics are identical on both channels, and identical
-regardless of whether OCPP 1.6 or 2.x is active.
+On the two EVerest-side channels, addressing and semantics are identical, and
+identical regardless of whether OCPP 1.6 or 2.x is active. The CSMS channel
+uses whatever the active protocol version prescribes (configuration keys in
+1.6, component/variable in 2.x); the rest of this section covers the
+EVerest-side channels.
 
 Reading and writing (canonical form)
 ------------------------------------
