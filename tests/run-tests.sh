@@ -94,38 +94,6 @@ echo "Suite:   $SUITE"
 echo "Python:  $PYTHON"
 echo "Prefix:  $PREFIX"
 
-# Track EXICodec Java processes present before this run.
-EXI_PIDS_BEFORE="$(ps -eo pid=,args= | awk '/EXICodec\.jar/ && /py4j\.GatewayServer/ {print $1}' | tr '\n' ' ')"
-
-teardown_network_isolation() {
-    :
-}
-
-cleanup_exi_java_processes() {
-    local current_pids pid
-    current_pids="$(ps -eo pid=,args= | awk '/EXICodec\.jar/ && /py4j\.GatewayServer/ {print $1}' | tr '\n' ' ')"
-
-    for pid in $current_pids; do
-        if [[ " $EXI_PIDS_BEFORE " != *" $pid "* ]]; then
-            kill -TERM "$pid" 2>/dev/null || true
-        fi
-    done
-
-    sleep 0.2
-
-    for pid in $current_pids; do
-        if [[ " $EXI_PIDS_BEFORE " != *" $pid "* ]] && kill -0 "$pid" 2>/dev/null; then
-            kill -KILL "$pid" 2>/dev/null || true
-        fi
-    done
-}
-
-cleanup_on_exit() {
-    teardown_network_isolation
-    cleanup_exi_java_processes
-}
-trap cleanup_on_exit EXIT
-
 # Network isolation
 ISOLATION_FLAG=""
 if [[ "$ISOLATION" == "true" && "$SERIAL" == "false" ]]; then
@@ -157,6 +125,7 @@ if [[ "$ISOLATION" == "true" && "$SERIAL" == "false" ]]; then
                 || sudo -n "$SETUP_SCRIPT" teardown "$WORKERS" 2>/dev/null \
                 || echo "Warning: Could not tear down network isolation. Run manually: sudo $SETUP_SCRIPT teardown"
         }
+        trap teardown_network_isolation EXIT
     fi
 fi
 
@@ -164,7 +133,7 @@ fi
 PYTEST_ARGS=(
     -rA
     --self-contained-html
-    --max-worker-restart=100  # allow worker restarts for debugging purposes
+    --max-worker-restart=0
     --timeout=300
     --everest-prefix "$PREFIX"
     --config-file "$SCRIPT_DIR/pytest.ini"
@@ -313,7 +282,8 @@ case "$SUITE" in
 
     eebus)
         cd "$SCRIPT_DIR"
-        run_pytest_suite \
+        "$PYTHON" -m pytest "${PYTEST_ARGS[@]}" \
+            --junitxml="$JUNITXML" --html="$HTML" \
             eebus_tests/eebus_tests.py
         ;;
 

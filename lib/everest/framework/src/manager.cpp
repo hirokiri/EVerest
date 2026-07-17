@@ -41,7 +41,6 @@ namespace fs = std::filesystem;
 
 using namespace Everest;
 
-const auto PARENT_DIED_SIGNAL = SIGTERM;
 // While no shutdown/force-kill deadline is running the main loop only has to react to signals
 // (SIGINT/SIGTERM/SIGCHLD wake the signal fd poll immediately), so it can block for a long time
 // instead of ticking every SIGNAL_POLL_TIMEOUT_MS.
@@ -50,7 +49,6 @@ const auto SIGNAL_POLL_TIMEOUT_MS = 50;
 const auto SHUTDOWN_TIMEOUT_MS = 5000;
 const auto FORCE_KILL_GRACE_TIMEOUT_MS = 5000;
 const std::uint8_t MAX_UNEXPECTED_MODULE_RESTARTS = 3;
-const auto complete_start_time = std::chrono::steady_clock::now();
 
 // Helper struct keeping information on how to start module
 struct ModuleStartInfo {
@@ -78,7 +76,7 @@ struct ModuleStartInfo {
 
 namespace {
 
-// File-local helpers for wait-status inspection, module process environment setup and module spawning.
+// Anonymous-namespace helpers used by Manager::run() and module spawn paths.
 
 /// \brief Convert a wait status code to a compact readable string.
 std::string format_wait_status(int status) {
@@ -415,8 +413,8 @@ ConfigBootMode parse_config_boot_mode(const std::string& config_opt, const std::
     throw std::logic_error("Could not parse config boot source, this should never happen.");
 }
 
-/// \brief Disconnect from MQTT; last cleanup step before the manager exits.
-void cleanup(MQTTAbstraction& mqtt_abstraction) {
+/// \brief Disconnect MQTT before the manager process exits (after controller shutdown).
+void disconnect_mqtt(MQTTAbstraction& mqtt_abstraction) {
     mqtt_abstraction.disconnect();
 }
 
@@ -491,6 +489,23 @@ void Manager::reset_shutdown_state() {
     force_kill_sent_ = false;
 }
 
+std::optional<int> Manager::transition_to_idle_after_shutdown(std::string_view log_message) {
+    transition_to(ManagerState::Idle);
+    EVLOG_info << log_message;
+    return std::nullopt;
+}
+
+int Manager::transition_to_exiting_after_shutdown(RuntimeContext& ctx, ManagerAdminPanel& admin_panel, int exit_code,
+                                                  bool reset_state) {
+    admin_panel.shutdown_controller();
+    disconnect_mqtt(ctx.mqtt_abstraction);
+    if (reset_state) {
+        reset_shutdown_state();
+    }
+    transition_to(ManagerState::Exiting);
+    return exit_code;
+}
+
 void Manager::handle_restart_modules_after_shutdown(RuntimeContext& ctx) {
     // Cleanup with the OLD config before the reload below. Required because this function is also
     // called from advance_lifecycle_state_if_ready() (crash-with-restart path) which does not go
@@ -505,7 +520,7 @@ void Manager::handle_restart_modules_after_shutdown(RuntimeContext& ctx) {
 
 std::optional<int> Manager::handle_finish_normal_shutdown(RuntimeContext& ctx, ManagerAdminPanel& admin_panel) {
     const std::string bad_modules = format_unclean_exits();
-    // Cleanup module state while MQTT is still connected (must be before cleanup() in Exiting path).
+    // Cleanup module state while MQTT is still connected (must be before disconnect_mqtt() in Exiting path).
     cleanup_modules_state(*ctx.config, ctx.mqtt_abstraction);
     if (sigint_received_) {
         if (bad_modules.empty()) {
@@ -515,20 +530,14 @@ std::optional<int> Manager::handle_finish_normal_shutdown(RuntimeContext& ctx, M
             EVLOG_warning << "Modules that did not shut down cleanly:" << bad_modules;
             print_shutdown_message(shutdown_start_time_);
         }
-        admin_panel.shutdown_controller();
-        cleanup(ctx.mqtt_abstraction);
-        reset_shutdown_state();
-        transition_to(ManagerState::Exiting);
-        return EXIT_SUCCESS;
+        return transition_to_exiting_after_shutdown(ctx, admin_panel, EXIT_SUCCESS, true);
     }
 
     if (!bad_modules.empty()) {
         EVLOG_warning << "Modules that did not shut down cleanly:" << bad_modules;
     }
     reset_shutdown_state();
-    transition_to(ManagerState::Idle);
-    EVLOG_info << "Manager is idle after module shutdown. Send SIGINT/SIGTERM to stop.";
-    return std::nullopt;
+    return transition_to_idle_after_shutdown("Manager is idle after module shutdown. Send SIGINT/SIGTERM to stop.");
 }
 
 std::optional<int> Manager::handle_finish_crash_recovery(RuntimeContext& ctx, ManagerAdminPanel& admin_panel) {
@@ -552,16 +561,12 @@ std::optional<int> Manager::handle_finish_crash_recovery(RuntimeContext& ctx, Ma
 
     // Stay idle only when the user has not requested a stop via SIGINT/SIGTERM.
     if (recover_module_crashes_ && !sigint_received_) {
-        transition_to(ManagerState::Idle);
-        EVLOG_info << "Crash recovery completed, manager is idle after module shutdown. Send SIGINT/SIGTERM to stop.";
-        return std::nullopt;
+        return transition_to_idle_after_shutdown(
+            "Crash recovery completed, manager is idle after module shutdown. Send SIGINT/SIGTERM to stop.");
     }
 
     EVLOG_critical << "Unexpected module exit; manager is exiting.";
-    admin_panel.shutdown_controller();
-    cleanup(ctx.mqtt_abstraction);
-    transition_to(ManagerState::Exiting);
-    return EXIT_FAILURE;
+    return transition_to_exiting_after_shutdown(ctx, admin_panel, EXIT_FAILURE, false);
 }
 
 std::optional<int> Manager::handle_finalize_shutdown_transition(RuntimeContext& ctx, ManagerAdminPanel& admin_panel,
@@ -872,20 +877,30 @@ std::vector<std::string> Manager::collect_ignored_modules() const {
     return {};
 }
 
-void Manager::transition_to(ManagerState new_state) {
-    if (state_ == new_state) {
+void Manager::transition_to_unlocked(ManagerState new_state) {
+    const auto current_state = state_.load();
+    if (current_state == new_state) {
         return;
     }
-    EVLOG_info << "Manager state transition: " << state_to_string(state_) << " -> " << state_to_string(new_state);
-    const ManagerState old_state = state_;
+    EVLOG_info << "Manager state transition: " << state_to_string(current_state) << " -> "
+               << state_to_string(new_state);
     state_ = new_state;
-    for (const auto& handler : state_transition_handlers_) {
-        handler(old_state, new_state);
-    }
 }
 
-void Manager::register_state_transition_handler(std::function<void(ManagerState, ManagerState)> handler) {
-    state_transition_handlers_.push_back(std::move(handler));
+void Manager::transition_to(ManagerState new_state) {
+    const std::lock_guard<std::mutex> lock(state_transition_mutex_);
+    transition_to_unlocked(new_state);
+}
+
+ManagerState Manager::current_state_unlocked() const {
+    return state_.load();
+}
+
+bool Manager::is_in_shutdown_flow_state_unlocked() const {
+    const auto s = current_state_unlocked();
+    return (s == ManagerState::ShutdownRequested) || (s == ManagerState::CrashShutdownInProgress) ||
+           (s == ManagerState::ForceTerminating) || (s == ManagerState::RestartRequested) ||
+           (s == ManagerState::ShutdownFinalizing);
 }
 
 Manager::Manager(const po::variables_map& vm) :
@@ -895,25 +910,23 @@ Manager::Manager(const po::variables_map& vm) :
 // ---- State predicates -------------------------------------------------------
 
 bool Manager::is_in_shutdown_flow_state() const {
-    return (state_ == ManagerState::ShutdownRequested) || (state_ == ManagerState::CrashShutdownInProgress) ||
-           (state_ == ManagerState::ForceTerminating) || (state_ == ManagerState::RestartRequested) ||
-           (state_ == ManagerState::ShutdownFinalizing);
+    const std::lock_guard<std::mutex> lock(state_transition_mutex_);
+    return is_in_shutdown_flow_state_unlocked();
 }
 
 bool Manager::is_restart_requested() const {
-    return state_ == ManagerState::RestartRequested;
-}
-
-bool Manager::is_crash_in_progress() const {
-    return state_ == ManagerState::CrashShutdownInProgress;
+    const std::lock_guard<std::mutex> lock(state_transition_mutex_);
+    return current_state_unlocked() == ManagerState::RestartRequested;
 }
 
 bool Manager::are_modules_started() const {
-    return state_ == ManagerState::Running;
+    const std::lock_guard<std::mutex> lock(state_transition_mutex_);
+    return current_state_unlocked() == ManagerState::Running;
 }
 
 bool Manager::is_idle() const {
-    return state_ == ManagerState::Idle;
+    const std::lock_guard<std::mutex> lock(state_transition_mutex_);
+    return current_state_unlocked() == ManagerState::Idle;
 }
 
 // ---- Event loop dispatch handlers ------------------------------------------
@@ -921,6 +934,7 @@ bool Manager::is_idle() const {
 /// \brief Handle module startup by publishing metadata, registering handlers, and spawning module processes.
 std::map<pid_t, std::string> Manager::handle_start_modules(const RuntimeContext& ctx) {
     BOOST_LOG_FUNCTION();
+    module_startup_start_time_ = std::chrono::steady_clock::now();
     auto& config = *ctx.config;
     const auto& module_configurations = config.get_module_configurations();
     if (module_configurations.size() == 0) {
@@ -972,31 +986,37 @@ std::map<pid_t, std::string> Manager::handle_start_modules(const RuntimeContext&
                                               mqtt_everest_prefix = ms.mqtt_settings.everest_prefix, &status_fifo,
                                               retain_topics](const std::string&, const nlohmann::json& json) {
             EVLOG_debug << fmt::format("received module ready signal for module: {}({})", module_id, json.dump());
-            const std::unique_lock<std::mutex> lock(modules_ready_mutex_);
-            // FIXME (aw): here are race conditions, if the ready handler gets called while modules are shut down!
-            try {
-                modules_ready_.at(module_id).ready = json.get<bool>();
-            } catch (const std::out_of_range& ex) {
-                // This can happen if we're shutting down and a module becomes
-                // ready.
-                EVLOG_error << "The module " << module_id << " is not in `modules_ready`: " << ex.what();
-                return;
-            }
+            bool all_modules_ready = false;
             std::size_t modules_spawned = 0;
-            for (const auto& mod : modules_ready_) {
-                const std::string text_ready =
-                    fmt::format((mod.second.ready) ? TERMINAL_STYLE_OK : TERMINAL_STYLE_ERROR, "ready");
-                EVLOG_debug << fmt::format("  {}: {}", mod.first, text_ready);
-                if (mod.second.ready) {
-                    modules_spawned += 1;
+            const std::size_t modules_ready_count = [&] {
+                const std::lock_guard<std::mutex> lock(modules_ready_mutex_);
+                // FIXME (aw): here are race conditions, if the ready handler gets called while modules are shut down!
+                try {
+                    modules_ready_.at(module_id).ready = json.get<bool>();
+                } catch (const std::out_of_range& ex) {
+                    // This can happen if we're shutting down and a module becomes
+                    // ready.
+                    EVLOG_error << "The module " << module_id << " is not in `modules_ready`: " << ex.what();
+                    return std::size_t{0};
                 }
-            }
-            if (!standalone_modules.empty() && std::find(standalone_modules.begin(), standalone_modules.end(),
-                                                         module_id) != standalone_modules.end()) {
-                EVLOG_info << fmt::format("Standalone module {} initialized.", module_id);
-            }
-            if (std::all_of(modules_ready_.begin(), modules_ready_.end(),
-                            [](const auto& element) { return element.second.ready; })) {
+                for (const auto& mod : modules_ready_) {
+                    const std::string text_ready =
+                        fmt::format((mod.second.ready) ? TERMINAL_STYLE_OK : TERMINAL_STYLE_ERROR, "ready");
+                    EVLOG_debug << fmt::format("  {}: {}", mod.first, text_ready);
+                    if (mod.second.ready) {
+                        modules_spawned += 1;
+                    }
+                }
+                if (!standalone_modules.empty() && std::find(standalone_modules.begin(), standalone_modules.end(),
+                                                             module_id) != standalone_modules.end()) {
+                    EVLOG_info << fmt::format("Standalone module {} initialized.", module_id);
+                }
+                all_modules_ready = std::all_of(modules_ready_.begin(), modules_ready_.end(),
+                                                [](const auto& element) { return element.second.ready; });
+                return modules_ready_.size();
+            }();
+
+            if (all_modules_ready) {
                 const auto complete_end_time = std::chrono::steady_clock::now();
                 if (not retain_topics) {
                     EVLOG_info << "Clearing retained topics published by manager during startup";
@@ -1004,23 +1024,33 @@ std::map<pid_t, std::string> Manager::handle_start_modules(const RuntimeContext&
                 } else {
                     EVLOG_info << "Keeping retained topics published by manager during startup for inspection";
                 }
-                EVLOG_info << fmt::format(
-                    TERMINAL_STYLE_OK, "🚙🚙🚙 All modules are initialized. EVerest up and running [{}ms] 🚙🚙🚙",
-                    std::chrono::duration_cast<std::chrono::milliseconds>(complete_end_time - complete_start_time)
-                        .count());
+                EVLOG_info << fmt::format(TERMINAL_STYLE_OK,
+                                          "🚙🚙🚙 All modules are initialized. EVerest up and running [{}ms] 🚙🚙🚙",
+                                          std::chrono::duration_cast<std::chrono::milliseconds>(
+                                              complete_end_time - module_startup_start_time_)
+                                              .count());
 
-                if (sigint_received_ || is_in_shutdown_flow_state()) {
-                    EVLOG_info << "All modules reported ready while shutdown is already in progress. "
-                                  "Skipping transition to Running.";
+                bool skip_running_transition = false;
+                {
+                    const std::lock_guard<std::mutex> state_lock(state_transition_mutex_);
+                    if (sigint_received_ || is_in_shutdown_flow_state_unlocked()) {
+                        EVLOG_info << "All modules reported ready while shutdown is already in progress. "
+                                      "Skipping transition to Running.";
+                        skip_running_transition = true;
+                    } else {
+                        transition_to_unlocked(ManagerState::Running);
+                    }
+                }
+                if (skip_running_transition) {
                     return;
                 }
-                transition_to(ManagerState::Running);
+
                 status_fifo.update(StatusFifo::ALL_MODULES_STARTED);
                 MqttMessagePayload payload{MqttMessageType::GlobalReady, nlohmann::json(true)};
 
                 mqtt_abstraction.publish(fmt::format("{}ready", mqtt_everest_prefix), payload);
             } else if (!standalone_modules.empty()) {
-                if (modules_spawned == modules_ready_.size() - standalone_modules.size()) {
+                if (modules_spawned == modules_ready_count - standalone_modules.size()) {
                     EVLOG_info << fmt::format(fg(fmt::terminal_color::green),
                                               "Modules started by manager are ready, waiting for standalone modules.");
                     status_fifo.update(StatusFifo::WAITING_FOR_STANDALONE_MODULES);
@@ -1092,8 +1122,13 @@ Manager::LifecycleAdvanceResult Manager::advance_lifecycle_state_if_ready(Runtim
 
     // Finalize shutdown as soon as all module processes are gone, even if we got here through ECHILD
     // after a timeout-triggered force shutdown.
-    if (in_shutdown_flow && module_handles_.empty() && state_ != ManagerState::ShutdownFinalizing) {
-        transition_to(ManagerState::ShutdownFinalizing);
+    if (in_shutdown_flow && module_handles_.empty()) {
+        {
+            const std::lock_guard<std::mutex> lock(state_transition_mutex_);
+            if (current_state_unlocked() != ManagerState::ShutdownFinalizing) {
+                transition_to_unlocked(ManagerState::ShutdownFinalizing);
+            }
+        }
         // A SIGINT/SIGTERM during a crash drain means the user wants to stop; do not auto-restart.
         if (crash_in_progress && recover_module_crashes_ && !sigint_received_ &&
             unexpected_module_exit_count_ <= MAX_UNEXPECTED_MODULE_RESTARTS) {
@@ -1147,8 +1182,11 @@ bool Manager::handle_child_exit(pid_t pid, int wstatus, RuntimeContext& ctx, Man
     const auto module_name = module_iter->second;
     module_handles_.erase(module_iter);
 
-    const bool unexpected_exit_during_start_or_run =
-        (state_ == ManagerState::StartingModules || state_ == ManagerState::Running);
+    const bool unexpected_exit_during_start_or_run = [&] {
+        const std::lock_guard<std::mutex> lock(state_transition_mutex_);
+        const auto s = current_state_unlocked();
+        return s == ManagerState::StartingModules || s == ManagerState::Running;
+    }();
     if (unexpected_exit_during_start_or_run) {
         // During startup/running, an exiting module is unexpected: trigger graceful shutdown.
         shutdown_cause_ = ShutdownCause::Crash;
@@ -1195,7 +1233,7 @@ std::optional<int> Manager::handle_signal(int signo, RuntimeContext& ctx, Manage
         if (module_handles_.empty()) {
             print_shutdown_message(shutdown_start_time_);
             admin_panel.shutdown_controller();
-            cleanup(ctx.mqtt_abstraction);
+            disconnect_mqtt(ctx.mqtt_abstraction);
             transition_to(ManagerState::Exiting);
             return EXIT_SUCCESS;
         }

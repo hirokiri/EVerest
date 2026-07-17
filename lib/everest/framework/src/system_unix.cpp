@@ -4,6 +4,7 @@
 #include "system_unix.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <stdexcept>
@@ -12,6 +13,7 @@
 #include <fcntl.h>
 #include <grp.h>
 #include <linux/securebits.h>
+#include <poll.h>
 #include <pwd.h>
 #include <signal.h>
 #include <sys/capability.h>

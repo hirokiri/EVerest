@@ -3,14 +3,12 @@
 
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include <cstdint>
-#include <poll.h>
 #include <sys/types.h>
 
 namespace Everest::system {

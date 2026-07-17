@@ -7,7 +7,6 @@
 #include <boost/program_options/variables_map.hpp>
 #include <chrono>
 #include <cstdint>
-#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -84,7 +83,6 @@ private:
     struct ModuleReadyInfo {
         bool ready{false};
         std::shared_ptr<TypedHandler> ready_token;
-        std::shared_ptr<TypedHandler> get_config_token;
     };
     using ModulesReadyType = std::unordered_map<std::string, ModuleReadyInfo>;
 
@@ -157,6 +155,15 @@ private:
     /// \brief Apply state transition with transition logging.
     void transition_to(ManagerState new_state);
 
+    /// \brief Like transition_to(); caller must hold state_transition_mutex_.
+    void transition_to_unlocked(ManagerState new_state);
+
+    /// \brief Like is_in_shutdown_flow_state(); caller must hold state_transition_mutex_.
+    bool is_in_shutdown_flow_state_unlocked() const;
+
+    /// \brief Load current state; caller must hold state_transition_mutex_.
+    ManagerState current_state_unlocked() const;
+
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // State predicates
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -167,8 +174,6 @@ private:
     bool is_in_shutdown_flow_state() const;
     /// \brief True when restart has been requested.
     bool is_restart_requested() const;
-    /// \brief True when crash-shutdown flow is active.
-    bool is_crash_in_progress() const;
     /// \brief True when in idle.
     bool is_idle() const;
 
@@ -205,6 +210,15 @@ private:
 
     /// \brief Reset all shutdown/drain bookkeeping state.
     void reset_shutdown_state();
+
+    /// \brief Transition to Idle after modules have shut down; logs \p log_message.
+    /// \return std::nullopt for callers that return std::optional<int>.
+    std::optional<int> transition_to_idle_after_shutdown(std::string_view log_message);
+
+    /// \brief Disconnect controller and MQTT, optionally reset shutdown state, transition to Exiting.
+    /// \return Process exit code for the caller.
+    int transition_to_exiting_after_shutdown(RuntimeContext& ctx, ManagerAdminPanel& admin_panel, int exit_code,
+                                             bool reset_state);
 
     /// \brief Finalize normal shutdown and decide exit vs idle outcome.
     /// \param ctx Runtime dependencies for the current run.
@@ -279,12 +293,15 @@ private:
 
     const boost::program_options::variables_map& vm_;
     bool recover_module_crashes_{false};
-    // state_ and sigint_received_ are also accessed from the module-ready handler running on the
-    // message-dispatch thread (see handle_start_modules), hence atomic.
+    // state_ is atomic because the module-ready handler runs on the MQTT thread; transitions are
+    // serialized with state_transition_mutex_ (main loop and ready handler).
     std::atomic<ManagerState> state_{ManagerState::Idle};
     ShutdownCause shutdown_cause_{ShutdownCause::None};
     std::atomic<bool> sigint_received_{false};
+    // Unexpected-exit recovery attempts for this manager process lifetime (current config).
+    // Not cleared on transition to Running; resets when run() starts (future: also on config change).
     std::uint8_t unexpected_module_exit_count_{0};
+    std::chrono::steady_clock::time_point module_startup_start_time_{std::chrono::steady_clock::now()};
     std::optional<std::chrono::steady_clock::time_point> shutdown_start_time_;
     std::optional<std::chrono::steady_clock::time_point> force_terminate_start_time_;
     bool force_kill_sent_{false};
@@ -292,9 +309,5 @@ private:
     std::vector<ModuleShutdownInfo> shutdown_info_;
     ModulesReadyType modules_ready_; // guarded by modules_ready_mutex_
     std::mutex modules_ready_mutex_;
-    std::vector<std::function<void(ManagerState, ManagerState)>> state_transition_handlers_;
-
-public:
-    /// \brief Register a callback invoked on every state transition with (old_state, new_state).
-    void register_state_transition_handler(std::function<void(ManagerState, ManagerState)> handler);
+    mutable std::mutex state_transition_mutex_;
 };

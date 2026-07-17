@@ -621,8 +621,8 @@ int ModuleLoader::initialize() {
         // this handler gets called when the global ready signal is received.
         everest.register_on_ready_handler(this->callbacks.ready);
 
-        // register the modules shutdown handler with the framework.
-        // this handler gets called when the global shutdown signal is received.
+        // Register the module shutdown handler with the framework.
+        // This handler is called when the global shutdown signal is received.
         everest.register_on_shutdown_handler(this->callbacks.shutdown);
 
         // the module should now be ready
