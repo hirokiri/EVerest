@@ -38,4 +38,5 @@ if(IS_PYTHON_VENV_ACTIVE)
 endif()
 
 add_subdirectory(everest-core_tests)
+add_subdirectory(core_tests/config)
 add_subdirectory(async_api_tests)

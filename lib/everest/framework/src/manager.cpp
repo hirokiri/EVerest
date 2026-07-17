@@ -1139,7 +1139,7 @@ bool Manager::handle_child_exit(pid_t pid, int wstatus, RuntimeContext& ctx, Man
 
     const auto module_iter = module_handles_.find(pid);
     if (module_iter == module_handles_.end()) {
-        throw std::runtime_error(fmt::format("Unknown child width pid ({}) died.", pid));
+        throw std::runtime_error(fmt::format("Unknown child with pid ({}) died.", pid));
     }
 
     const auto module_name = module_iter->second;

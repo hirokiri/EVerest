@@ -54,8 +54,7 @@ void ManagerLifecycleSimulator::shutdown() {
         EVLOG_info << "ManagerLifecycleSimulator: shutdown command received via framework, but process is blocked.";
         std::this_thread::sleep_for(BLOCKED_SHUTDOWN_SLEEP_DURATION);
     }
-    EVLOG_info << "ManagerLifecycleSimulator: shutdown command received via framework, exiting process.";
-    std::exit(EXIT_SUCCESS);
+    EVLOG_info << "ManagerLifecycleSimulator: shutdown command received via framework.";
 }
 
 } // namespace module

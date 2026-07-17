@@ -23,7 +23,8 @@ shutdown duration before `ForceTerminating`, and the cap on automatic crash rest
 
 - First signal (no modules): cleanup and → `Exiting` with success.
 - First signal (modules running): `shutdown_cause` = `Normal`, → `ShutdownRequested`, MQTT
-  shutdown is published; modules are expected to exit; child exits are collected while draining.
+  shutdown is published; modules run their shutdown handlers and return so the process can exit;
+  child exits are collected while draining (see **Module process exit** below).
 - When **all** module children have exited while still in a shutdown-flow state, the manager
   → `ShutdownFinalizing`, then typically `handle_finish_normal_shutdown()`:
   - If this shutdown was due to the first SIGINT/SIGTERM (`sigint_received_`): → `Exiting` with
@@ -79,3 +80,22 @@ when modules miss their shutdown deadline.
 controller IPC, signal polling, shutdown timer). Re-entrancy is avoided by keeping shared state
 on `Manager` and using explicit gates (for example "do not go to `Running` if shutdown already
 started").
+
+## Module process exit
+
+When the manager publishes the global MQTT shutdown signal, each module's `Everest::handle_shutdown()`
+runs the registered shutdown callback (generated `LdEverest::shutdown()` for C++ modules), then
+disconnects MQTT. That stops the module's main loop; `main()` returns and the child process exits
+normally. Module authors should tear down threads and resources in `shutdown()` and **return**
+promptly — the framework does not call `exit()` from module base classes.
+
+If a module does not implement `shutdown()` on an interface implementation, the default logs a
+warning and returns; the process still exits once MQTT disconnect completes.
+
+Legacy module headers that predate the shutdown template may omit a module-level `shutdown()`
+entirely; in that case `ModuleBase::shutdown()` logs a warning and returns (no impl hooks run
+until the module is regenerated).
+
+If a module blocks in `shutdown()` or keeps other threads running, the manager escalates after the
+graceful shutdown timeout (`SHUTDOWN_TIMEOUT_MS`) to SIGTERM and, if needed, SIGKILL (see
+**Shutdown timeout and forced kill** above).

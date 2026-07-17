@@ -852,15 +852,6 @@ void Everest::ensure_ready() const {
     }
 }
 
-void Everest::signal_shutdown() {
-    BOOST_LOG_FUNCTION();
-
-    EVLOG_info << "Module " << this->module_id << " requested shutdown of EVerest.";
-
-    // FIXME: maybe make this a publish tied to the module like with ready?
-    this->mqtt_abstraction->publish(fmt::format("{}shutdown", mqtt_everest_prefix), json(true));
-}
-
 ///
 /// \brief Ready handler for global readyness (e.g. all modules are ready now).
 /// This will called when receiving the global ready signal from manager.
@@ -922,8 +913,9 @@ void Everest::handle_shutdown(const json& data) {
         EVLOG_warning << "No shutdown handler registered for module " << this->module_id;
     }
 
-    // only after the shutdown handler has returned communication is cut; commands issued from
-    // within the handler are processed normally, pending commands fail with Shutdown from here on
+    // Only after the shutdown handler has returned is communication cut; commands issued from
+    // within the handler are processed normally, pending commands fail with Shutdown from here on.
+    // Disconnect MQTT so the module main loop ends and the process exits via normal main() return.
     this->shutdown_processed = true;
     this->mqtt_abstraction->disconnect();
 }

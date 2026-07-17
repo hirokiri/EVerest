@@ -195,11 +195,6 @@ public:
     void signal_ready();
 
     ///
-    /// \brief Signal that the module wants to shutdown
-    ///
-    void signal_shutdown();
-
-    ///
     /// \brief registers a callback \p handler that is called when the global ready signal is received via mqtt
     ///
     void register_on_ready_handler(const std::function<void()>& handler);

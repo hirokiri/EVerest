@@ -62,7 +62,10 @@ struct ManagerAdminPanel::Impl {
     static ControllerHandle start_controller(const ManagerSettings& ms) {
         std::array<int, 2> socket_pair{};
 
-        socketpair(AF_UNIX, SOCK_DGRAM, 0, socket_pair.data());
+        if (socketpair(AF_UNIX, SOCK_DGRAM, 0, socket_pair.data()) != 0) {
+            throw std::runtime_error(
+                fmt::format("Syscall to socketpair() failed while starting controller ({})", strerror(errno)));
+        }
         const int manager_socket = socket_pair[0];
         const int controller_socket = socket_pair[1];
 
@@ -90,7 +93,8 @@ struct ManagerAdminPanel::Impl {
             execl(controller_binary.c_str(), MAGIC_CONTROLLER_ARG0, NULL);
 
             proc_handle.send_error_and_exit(fmt::format("Syscall to execl() with \"{} {}\" failed ({})",
-                                                        controller_binary.string(), strerror(errno)));
+                                                        MAGIC_CONTROLLER_ARG0, controller_binary.string(),
+                                                        strerror(errno)));
         }
 
         close(controller_socket);
