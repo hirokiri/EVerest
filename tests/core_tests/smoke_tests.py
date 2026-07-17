@@ -64,7 +64,7 @@ class DcConfigAdjustmentStrategy(EverestConfigAdjustmentStrategy):
         adjusted_config = deepcopy(everest_config)
         adjusted_config["active_modules"]["iso15118_car"]["config_module"]["supported_DIN70121"] = False
         adjusted_config["active_modules"]["iso15118_car"]["config_module"]["supported_ISO15118_2"] = not self.ev_d20_only
-        adjusted_config["active_modules"]["iso15118_car"]["config_module"]["supported_ISO15118_20_DC"] = self.ev_d20_only
+        adjusted_config["active_modules"]["iso15118_car"]["config_module"]["supported_d20_energy_services"] = "DC,DC_BPT" if self.ev_d20_only else ""
         adjusted_config["active_modules"]["evse_manager"]["config_module"]["hack_allow_bpt_with_iso2"] = False
         adjusted_config["active_modules"]["powersupply_dc"]["config_implementation"] = {"main": {"min_current": 0}}
         adjusted_config["active_modules"]["evse_manager"]["config_module"]["zero_power_ignore_pause"] = self.zero_power_ignore_pause
@@ -544,7 +544,7 @@ async def test_iso15118_ac_session_stop_by_evse(
 @pytest.mark.probe_module(
     connections={"evse_manager": [Requirement("evse_manager", "evse")]}
 )
-@pytest.mark.everest_core_config("config-sil-dc-isomux.yaml")
+@pytest.mark.everest_core_config("config-sil-dc.yaml")
 @pytest.mark.parametrize(
     "iso15118_version",
     [
@@ -619,7 +619,7 @@ async def test_iso15118_20_dc_session_over_tls(
 @pytest.mark.probe_module(
     connections={"evse_manager": [Requirement("evse_manager", "evse")]}
 )
-@pytest.mark.everest_core_config("config-sil-dc-isomux.yaml")
+@pytest.mark.everest_core_config("config-sil-dc.yaml")
 @pytest.mark.parametrize(
     "iso15118_version",
     [
@@ -665,7 +665,7 @@ async def test_iso15118_dc_session_stop_by_evse(
 @pytest.mark.probe_module(
     connections={"evse_manager": [Requirement("evse_manager", "evse")]}
 )
-@pytest.mark.everest_core_config("config-sil-dc-isomux.yaml")
+@pytest.mark.everest_core_config("config-sil-dc.yaml")
 @pytest.mark.parametrize(
     "iso15118_version",
     [
@@ -820,7 +820,7 @@ async def test_iso15118_dc_session_no_energy_before_session(
         "gcp": [Requirement("grid_connection_point", "external_limits")],
     }
 )
-@pytest.mark.everest_core_config("config-sil-dc-isomux.yaml")
+@pytest.mark.everest_core_config("config-sil-dc.yaml")
 @pytest.mark.parametrize(
     "iso15118_version",
     [
@@ -946,7 +946,7 @@ async def test_iso15118_ac_session_no_energy_during_session_timeout_triggers(
         "gcp": [Requirement("grid_connection_point", "external_limits")],
     }
 )
-@pytest.mark.everest_core_config("config-sil-dc-isomux.yaml")
+@pytest.mark.everest_core_config("config-sil-dc.yaml")
 @pytest.mark.parametrize(
     "iso15118_version",
     [
@@ -987,7 +987,7 @@ async def test_iso15118_dc_session_no_energy_during_session(
         "gcp": [Requirement("grid_connection_point", "external_limits")],
     }
 )
-@pytest.mark.everest_core_config("config-sil-dc-isomux.yaml")
+@pytest.mark.everest_core_config("config-sil-dc.yaml")
 @pytest.mark.parametrize(
     "iso15118_version",
     [

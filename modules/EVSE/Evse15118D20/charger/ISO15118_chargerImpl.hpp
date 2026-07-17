@@ -20,7 +20,7 @@
 #include "grid_event.hpp"
 #include "utils.hpp"
 
-#include <iso15118/d20/config.hpp>
+#include <iso15118/session/config.hpp>
 #include <iso15118/session/feedback.hpp>
 #include <iso15118/tbd_controller.hpp>
 // ev@75ac1216-19eb-4182-a85c-820f1fc2c091:v1
@@ -94,7 +94,7 @@ private:
 
     std::unique_ptr<iso15118::TbdController> controller;
 
-    iso15118::d20::EvseSetupConfig setup_config;
+    iso15118::session::EvseSetupConfig setup_config;
     std::bitset<NUMBER_OF_SETUP_STEPS> setup_steps_done{0};
 
     std::optional<float> evse_max_reactive_power;

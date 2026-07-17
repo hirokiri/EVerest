@@ -226,8 +226,33 @@ void ISO15118_chargerImpl::apply_active_der_directives() {
 }
 
 void ISO15118_chargerImpl::ready() {
-    publish_supported_app_protocols_secc(
-        types::iso15118::SupportedAppProtocols{{types::iso15118::SupportedAppProtocol::ISO15118D20}});
+    // enforce_tls_1_3 pins the server to TLS 1.3, but ISO 15118-2 mandates TLS 1.2. With both enabled
+    // every ISO 15118-2 client would silently fail the handshake while ISO 15118-2 is still advertised at
+    // SAP, so refuse to start. Mirrors the Ev15118 module guard.
+    if (mod->config.enforce_tls_1_3 and mod->config.supported_ISO15118_2) {
+        EVLOG_error << "Evse15118D20: enforce_tls_1_3 and supported_ISO15118_2 are both set, but ISO 15118-2 "
+                       "requires TLS 1.2; disable one of them. The SECC will not start";
+        return;
+    }
+
+    // Priority-ordered list of protocol generations the SECC offers in the SupportedAppProtocol handshake.
+    // ISO 15118-20 is always highest priority (preserving the historic default behaviour), followed by
+    // ISO 15118-2 and then DIN SPEC 70121 when enabled via config.
+    std::vector<iso15118::ProtocolId> supported_protocols{iso15118::ProtocolId::ISO15118_20};
+    types::iso15118::SupportedAppProtocols secc_app_protocols{{types::iso15118::SupportedAppProtocol::ISO15118D20}};
+
+    if (mod->config.supported_ISO15118_2) {
+        supported_protocols.push_back(iso15118::ProtocolId::ISO15118_2);
+        secc_app_protocols.app_protocols.push_back(types::iso15118::SupportedAppProtocol::ISO15118D2);
+    }
+    if (mod->config.supported_DIN70121) {
+        supported_protocols.push_back(iso15118::ProtocolId::DIN70121);
+        secc_app_protocols.app_protocols.push_back(types::iso15118::SupportedAppProtocol::DIN70121);
+    }
+
+    setup_config.supported_protocols = supported_protocols;
+
+    publish_supported_app_protocols_secc(secc_app_protocols);
 
     while (true) {
         if (setup_steps_done.all()) {
@@ -238,9 +263,10 @@ void ISO15118_chargerImpl::ready() {
 
     const auto session_logger = std::make_unique<SessionLogger>(mod->config.logging_path);
 
-    // Obtain certificate location from the security module
+    // Obtain certificate location from the security module. include_ocsp=true so the leaf's cached OCSP
+    // responses are returned and can be stapled during the TLS handshake (as EvseV2G does).
     const auto certificate_response = mod->r_security->call_get_leaf_certificate_info(
-        types::evse_security::LeafCertificateType::V2G, types::evse_security::EncodingFormat::PEM, false);
+        types::evse_security::LeafCertificateType::V2G, types::evse_security::EncodingFormat::PEM, true);
 
     if (certificate_response.status != types::evse_security::GetCertificateInfoStatus::Accepted or
         !certificate_response.info.has_value()) {
@@ -261,6 +287,10 @@ void ISO15118_chargerImpl::ready() {
     const auto v2g_root_cert_path = mod->r_security->call_get_verify_file(types::evse_security::CaCertificateType::V2G);
     const auto mo_root_cert_path = mod->r_security->call_get_verify_file(types::evse_security::CaCertificateType::MO);
 
+    // Contract certificate chain roots for the ISO 15118-2 Plug-and-Charge PaymentDetails validation.
+    setup_config.contract_mo_root_path = mo_root_cert_path;
+    setup_config.contract_v2g_root_path = v2g_root_cert_path;
+
     // TODO(mlitre): Should be updated once libiso supports service renegotiation
     this->mod->p_extensions->publish_service_renegotiation_supported(false);
 
@@ -272,11 +302,22 @@ void ISO15118_chargerImpl::ready() {
     ssl_for_controller.enable_tls_key_logging = mod->config.enable_tls_key_logging;
     ssl_for_controller.enforce_tls_1_3 = mod->config.enforce_tls_1_3;
     ssl_for_controller.tls_key_logging_path = mod->config.tls_key_logging_path;
+    // Collect the leaf chain's OCSP response files (in chain order) so tls::Server can staple them
+    // (ISO 15118-2 [V2G2-071]). Sourced from EvseSecurity, mirroring EvseV2G's stapling path.
+    std::vector<std::string> ocsp_response_files;
+    if (certificate_info.ocsp.has_value()) {
+        for (const auto& ocsp : certificate_info.ocsp.value()) {
+            if (ocsp.ocsp_path.has_value()) {
+                ocsp_response_files.push_back(ocsp.ocsp_path.value());
+            }
+        }
+    }
+
     ssl_for_controller.chains.push_back(iso15118::config::ChainConfig{
         path_chain,
         certificate_info.key,
         certificate_info.password,
-        {}, // ocsp_response_files — none for the single-chain leaf path
+        std::move(ocsp_response_files),
     });
 
     iso15118::TbdConfig tbd_config = {
@@ -305,6 +346,23 @@ void ISO15118_chargerImpl::ready() {
     }
 
     controller = std::make_unique<iso15118::TbdController>(std::move(tbd_config), std::move(callbacks), setup_config);
+
+    // ISO 15118-2 Plug-and-Charge CertificateInstallation relay: forward the backend's
+    // CertificateInstallationRes (received by the extensions impl) into libiso15118 as a control event.
+    // Registered after the controller exists so the extensions impl (a separate command thread) can
+    // safely inject the response into the running session (the control-event queue is mutex-protected).
+    mod->on_certificate_response = [this](const types::iso15118::ResponseExiStreamStatus& response) {
+        std::scoped_lock lock(GEL);
+        if (not controller) {
+            return;
+        }
+        iso15118::d20::CertificateResponse event;
+        event.status_accepted = (response.status == types::iso15118::Status::Accepted);
+        if (response.exi_response.has_value()) {
+            event.exi_response_base64 = response.exi_response.value();
+        }
+        controller->send_control_event(event);
+    };
 
     // if the vas providers report their supported vas services before the controller exists,
     // we need to update the controller with the supported vas services after instantiation
@@ -664,7 +722,7 @@ iso15118::session::feedback::Callbacks ISO15118_chargerImpl::create_callbacks() 
         }
     };
 
-    callbacks.v2g_message = [this](iso15118::message_20::Type id) {
+    callbacks.v2g_message = [this](const iso15118::V2gMessageType& id) {
         const auto v2g_message_id = convert_v2g_message_type(id);
         publish_v2g_messages({v2g_message_id});
     };
@@ -830,6 +888,34 @@ iso15118::session::feedback::Callbacks ISO15118_chargerImpl::create_callbacks() 
         this->mod->p_charger->publish_ev_termination(termination_ctx);
     };
 
+    // ISO 15118-2 Plug-and-Charge: the library verified a signed AuthorizationReq and asks the higher
+    // layer to authorize the contract eMAID. Republish it as a PnC ProvidedIdToken (EvseManager forwards
+    // it to Auth, which validates it and answers via handle_authorization_response).
+    callbacks.require_auth_pnc = [this](const std::string& emaid, const std::string& contract_chain_pem) {
+        types::authorization::ProvidedIdToken token;
+        token.id_token = {emaid, types::authorization::IdTokenType::eMAID};
+        token.authorization_type = types::authorization::AuthorizationType::PlugAndCharge;
+        if (not contract_chain_pem.empty()) {
+            token.certificate = contract_chain_pem;
+        }
+        this->mod->p_charger->publish_require_auth_pnc(token);
+    };
+
+    // ISO 15118-2 Plug-and-Charge CertificateInstallation relay: libiso15118 forwards the raw
+    // CertificateInstallationReq EXI (base64). Republish it verbatim on the iso15118_extensions
+    // interface (iso15118_certificate_request) so the CSMS/CPS backend can build the response. The
+    // response is delivered async via handle_set_get_certificate_response (see on_certificate_response).
+    callbacks.certificate_request = [this](const std::string& exi_request_base64,
+                                           iso15118::session::feedback::CertificateExchangeAction action) {
+        types::iso15118::RequestExiStreamSchema request;
+        request.exi_request = exi_request_base64;
+        request.iso15118_schema_version = "urn:iso:15118:2:2013:MsgDef";
+        request.certificate_action = (action == iso15118::session::feedback::CertificateExchangeAction::Update)
+                                         ? types::iso15118::CertificateActionEnum::Update
+                                         : types::iso15118::CertificateActionEnum::Install;
+        this->mod->p_extensions->publish_iso15118_certificate_request(request);
+    };
+
     return callbacks;
 }
 
@@ -854,16 +940,19 @@ void ISO15118_chargerImpl::handle_session_setup(std::vector<types::iso15118::Pay
 
     std::vector<dt::Authorization> auth_services;
 
+    bool contract_offered = false;
     for (auto& option : payment_options) {
         if (option == types::iso15118::PaymentOption::ExternalPayment) {
             auth_services.push_back(dt::Authorization::EIM);
         } else if (option == types::iso15118::PaymentOption::Contract) {
-            // auth_services.push_back(iso15118::message_20::Authorization::PnC);
-            EVLOG_warning << "Currently Plug&Charge is not supported and ignored";
+            // ISO 15118-20 PnC is not yet wired; the ISO 15118-2 SECC engine does support Plug-and-Charge
+            // (Contract payment) and is enabled via setup_config.iso2_pnc_enabled below.
+            contract_offered = true;
         }
     }
 
     setup_config.authorization_services = auth_services;
+    setup_config.iso2_pnc_enabled = contract_offered;
     setup_config.enable_certificate_install_service = supported_certificate_service;
 
     setup_steps_done.set(to_underlying_value(SetupStep::AUTH_SETUP));
@@ -994,7 +1083,16 @@ void ISO15118_chargerImpl::handle_cable_check_finished(bool& status) {
 }
 
 void ISO15118_chargerImpl::handle_receipt_is_required(bool& receipt_required) {
-    // your code for cmd receipt_is_required goes here
+    // Request a (signed) MeteringReceipt from the EV: the SECC sets ReceiptRequired in the DC
+    // CurrentDemandRes / AC ChargingStatusRes charge loop (PnC only). EvseManager calls this from its
+    // own ready(), whose order vs this module's ready() (which creates the controller) is not
+    // guaranteed. Store it in setup_config so a controller created later picks it up, AND update a live
+    // controller for calls that arrive after creation. (Mirrors EvseV2G's evse_v2g_data.receipt_required.)
+    std::scoped_lock lock(GEL);
+    setup_config.iso2_receipt_required = receipt_required;
+    if (controller) {
+        controller->update_receipt_required(receipt_required);
+    }
 }
 
 void ISO15118_chargerImpl::handle_stop_charging(bool& stop) {
@@ -1034,12 +1132,14 @@ bool ISO15118_chargerImpl::handle_update_supported_app_protocols(
 
     EVLOG_info << "Configured charging protocols: [" << configured_protocols << "]";
 
-    bool has_iso15118_d20{false};
     bool all_supported{true};
 
     for (const auto& protocol : supported_app_protocols.app_protocols) {
         if (protocol == types::iso15118::SupportedAppProtocol::ISO15118D20) {
-            has_iso15118_d20 = true;
+            continue;
+        } else if (protocol == types::iso15118::SupportedAppProtocol::ISO15118D2 && mod->config.supported_ISO15118_2) {
+            continue;
+        } else if (protocol == types::iso15118::SupportedAppProtocol::DIN70121 && mod->config.supported_DIN70121) {
             continue;
         } else {
             EVLOG_warning << fmt::format("Unsupported app protocol: {}",
@@ -1310,15 +1410,56 @@ void ISO15118_chargerImpl::handle_update_dc_present_values(
 }
 
 void ISO15118_chargerImpl::handle_update_meter_info(types::powermeter::Powermeter& powermeter) {
-    // your code for cmd update_meter_info goes here
+    // Forward the latest meter reading into the active session so the charge-loop states can populate
+    // MeterInfo when a signed MeteringReceipt is requested (ISO 15118-2 PnC, [V2G2-902]).
+    iso15118::d20::MeterInfo meter_info{};
+    meter_info.meter_id = powermeter.meter_id.value_or("");
+    // energy_Wh_import.total is the billing-relevant sum in Wh.
+    const float energy_wh = powermeter.energy_Wh_import.total;
+    meter_info.meter_reading_wh = energy_wh > 0.0f ? static_cast<uint64_t>(energy_wh) : 0U;
+
+    std::scoped_lock lock(GEL);
+    if (controller) {
+        controller->send_control_event(meter_info);
+    }
 }
 
 void ISO15118_chargerImpl::handle_send_error(types::iso15118::EvseError& error) {
-    // your code for cmd send_error goes here
+    // Map the EvseManager error to the library's neutral EVSE error code and forward it as a control
+    // event. The SECC engines stamp Malfunction / UtilityInterruptEvent (RCD -> AC RCD flag) into the DC
+    // charge responses so the EV sees the fault, and abort the session on EmergencyShutdown (mirrors
+    // EvseV2G's handle_send_error).
+    auto code = iso15118::d20::EvseErrorCode::None;
+    switch (error) {
+    case types::iso15118::EvseError::Error_Contactor:
+        code = iso15118::d20::EvseErrorCode::Contactor;
+        break;
+    case types::iso15118::EvseError::Error_RCD:
+        code = iso15118::d20::EvseErrorCode::RCD;
+        break;
+    case types::iso15118::EvseError::Error_UtilityInterruptEvent:
+        code = iso15118::d20::EvseErrorCode::UtilityInterruptEvent;
+        break;
+    case types::iso15118::EvseError::Error_Malfunction:
+        code = iso15118::d20::EvseErrorCode::Malfunction;
+        break;
+    case types::iso15118::EvseError::Error_EmergencyShutdown:
+        code = iso15118::d20::EvseErrorCode::EmergencyShutdown;
+        break;
+    }
+
+    std::scoped_lock lock(GEL);
+    if (controller) {
+        controller->send_control_event(iso15118::d20::EvseError{code});
+    }
 }
 
 void ISO15118_chargerImpl::handle_reset_error() {
-    // your code for cmd reset_error goes here
+    // Clear any active EVSE error so subsequent responses report the normal status again.
+    std::scoped_lock lock(GEL);
+    if (controller) {
+        controller->send_control_event(iso15118::d20::EvseError{iso15118::d20::EvseErrorCode::None});
+    }
 }
 
 } // namespace charger
