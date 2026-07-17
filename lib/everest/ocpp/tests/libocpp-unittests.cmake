@@ -21,6 +21,7 @@ set(DEVICE_MODEL_CURRENT_EXAMPLE_CONFIG_LOCATION_V2 "${PROJECT_SOURCE_DIR}/confi
 # Kept out of the shipped library config so DER is not enabled by default; the values live here
 # until a proper interface fills them dynamically.
 set(DEVICE_MODEL_TEST_DER_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/config/v2/DCDERCtrlr_1.json")
+set(DEVICE_MODEL_TEST_AC_DER_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/config/v2/ACDERCtrlr_1.json")
 set(TEST_PROFILES_LOCATION_V16 "${CMAKE_CURRENT_BINARY_DIR}/resources/profiles/v16")
 set(TEST_PROFILES_LOCATION_V2 "${CMAKE_CURRENT_BINARY_DIR}/resources/profiles/v2")
 set(TEST_PROFILES_LOCATION_V21 "${CMAKE_CURRENT_BINARY_DIR}/resources/profiles/v21")
@@ -76,8 +77,10 @@ set(LIBOCPP_TEST_INCLUDE_COMMON_SOURCES ${LIBOCPP_LIB_PATH}/ocpp/common/types.cp
 set(LIBOCPP_TEST_INCLUDE_V2_SOURCES ${LIBOCPP_LIB_PATH}/ocpp/v16/ocpp_enums.cpp   # This is currently still needed but might be removed in the future.
                                       ${LIBOCPP_LIB_PATH}/ocpp/v16/known_keys.cpp
                                       ${LIBOCPP_LIB_PATH}/ocpp/v16/charge_point_configuration_base.cpp
+                                      ${LIBOCPP_LIB_PATH}/ocpp/v16/charge_point_configuration_connectivity.cpp
                                       ${LIBOCPP_LIB_PATH}/ocpp/v16/utils.cpp
                                       ${LIBOCPP_LIB_PATH}/ocpp/v16/messages/StopTransaction.cpp
+                                      ${LIBOCPP_LIB_PATH}/ocpp/common/websocket/websocket_uri.cpp
                                       ${LIBOCPP_LIB_PATH}/ocpp/v2/ctrlr_component_variables.cpp
                                       ${LIBOCPP_LIB_PATH}/ocpp/v2/types.cpp
                                       ${LIBOCPP_LIB_PATH}/ocpp/v2/ocpp_types.cpp

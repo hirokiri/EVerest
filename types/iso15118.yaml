@@ -22,7 +22,8 @@ types:
       - DC
       - AC_BPT
       - AC_BPT_DER
-      - AC_DER
+      - AC_DER_IEC
+      - AC_DER_SAE
       - DC_BPT
       - DC_ACDP
       - DC_ACDP_BPT
@@ -123,6 +124,14 @@ types:
       - AcChargeLoopRes
       - AcChargeParameterDiscoveryReq
       - AcChargeParameterDiscoveryRes
+      - AcDerChargeParameterDiscoveryReq
+      - AcDerChargeParameterDiscoveryRes
+      - AcDerChargeLoopReq
+      - AcDerChargeLoopRes
+      - AcDerSaeChargeParameterDiscoveryReq
+      - AcDerSaeChargeParameterDiscoveryRes
+      - AcDerSaeChargeLoopReq
+      - AcDerSaeChargeLoopRes
       - DcCableCheckReq
       - DcCableCheckRes
       - DcChargeLoopReq
@@ -696,33 +705,6 @@ types:
           range dedicated for cycling activity.
         type: number
         minimum: 0
-  DERControl:
-    description: >-
-      Name of control settings to clear. Not used when _controlId_ is provided.
-    type: string
-    enum:
-      - EnterService
-      - FreqDroop
-      - FreqWatt
-      - FixedPFAbsorb
-      - FixedPFInject
-      - FixedVar
-      - Gradients
-      - HFMustTrip
-      - HFMayTrip
-      - HVMustTrip
-      - HVMomCess
-      - HVMayTrip
-      - LimitMaxDischarge
-      - LFMustTrip
-      - LVMustTrip
-      - LVMomCess
-      - LVMayTrip
-      - PowerMonitoringMustTrip
-      - VoltVar
-      - VoltWatt
-      - WattPF
-      - WattVar
   ServiceCategory:
     description: Different service (energy and VAS) in ISO15118-20
     type: string
@@ -736,6 +718,8 @@ types:
       - DC_ACDP_BPT
       - MCS
       - MCS_BPT
+      - AC_DER_IEC
+      - AC_DER_SAE
       - Internet
       - ParkingStatus
   Connector:
@@ -1125,7 +1109,7 @@ types:
         type: array
         items:
           type: string
-          $ref: /iso15118#/DERControl
+          $ref: /grid_support#/DirectiveType
         minItems: 1
       ev_over_excited_max_discharge_power:
         description: >-
@@ -1572,6 +1556,10 @@ types:
           type: string
           $ref: /iso15118#/Connector
         minItems: 1
+      evse_max_reactive_power:
+        description: Maximum reactive power the EVSE supports in var; de-normalization base for AC_DER_IEC percentage control curves
+        type: number
+        minimum: 0
   AcEvseMaximumPower:
     description: Maximum ac power values (charge and discharge) the EVSE can deliver
     type: object

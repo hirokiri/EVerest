@@ -2,10 +2,12 @@
 // Copyright Pionix GmbH and Contributors to EVerest
 
 #include "systemImpl.hpp"
+#include "everest/logging.hpp"
+#include "generated/types/system.hpp"
 
 #include <chrono>
-#include <cstdlib>
 #include <fstream>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -24,6 +26,7 @@ const std::string CONSTANTS = "constants.env";
 const std::string DIAGNOSTICS_UPLOADER = "diagnostics_uploader.sh";
 const std::string FIRMWARE_UPDATER = "firmware_updater.sh";
 const std::string SIGNED_FIRMWARE_DOWNLOADER = "signed_firmware_downloader.sh";
+const std::string SIGNED_FIRMWARE_METADATA_PARSER = "signed_firmware_metadata_parser.sh";
 const std::string SIGNED_FIRMWARE_INSTALLER = "signed_firmware_installer.sh";
 
 namespace fs = std::filesystem;
@@ -46,6 +49,13 @@ fs::path create_temp_file(const fs::path& dir, const std::string& prefix) {
     close(fd);
 
     return fn_template_buffer.data();
+}
+
+bool split_key_value(const std::string& key_value, std::string& key, std::string& value) {
+    std::stringstream line_stream(key_value);
+    bool split_ok = !std::getline(line_stream, key, '=').fail();
+    split_ok = split_ok && !std::getline(line_stream, value, '=').fail();
+    return split_ok;
 }
 
 void systemImpl::init() {
@@ -80,8 +90,12 @@ void systemImpl::standard_firmware_update(const types::system::FirmwareUpdateReq
     this->update_firmware_thread = std::thread([this, firmware_update_request, firmware_file_path, constants]() {
         const auto firmware_updater = this->scripts_path / FIRMWARE_UPDATER;
 
-        const std::vector<std::string> args = {constants.string(), firmware_update_request.location,
-                                               firmware_file_path.string()};
+        const auto separator = firmware_update_request.location.find('#');
+        const auto location = firmware_update_request.location.substr(0, separator);
+        const auto metadata_fragment =
+            separator == std::string::npos ? std::string() : firmware_update_request.location.substr(separator + 1);
+
+        const std::vector<std::string> args = {constants.string(), location, firmware_file_path.string()};
         int32_t retries = 0;
         const auto total_retries = firmware_update_request.retries.value_or(this->mod->config.DefaultRetries);
         const auto retry_interval =
@@ -91,6 +105,22 @@ void systemImpl::standard_firmware_update(const types::system::FirmwareUpdateReq
         types::system::FirmwareUpdateStatus firmware_status;
         firmware_status.request_id = -1;
         firmware_status.firmware_update_status = firmware_status_enum;
+
+        std::map<std::string, std::string> parsed_fragment;
+        std::stringstream fragment_stream(metadata_fragment);
+        std::string fragment_key_value;
+        while (std::getline(fragment_stream, fragment_key_value, '&')) {
+            std::string key;
+            std::string value;
+            if (split_key_value(fragment_key_value, key, value)) {
+                parsed_fragment[key] = value;
+            }
+        }
+        if (parsed_fragment.count("disable_connectors_during_install") != 0) {
+            types::system::FirmwareUpdateMetadata metadata;
+            metadata.disable_connectors_during_install = parsed_fragment["disable_connectors_during_install"] == "true";
+            firmware_status.firmware_update_metadata.emplace(metadata);
+        }
 
         while (firmware_status.firmware_update_status == types::system::FirmwareUpdateStatusEnum::DownloadFailed &&
                retries < total_retries) {
@@ -157,6 +187,14 @@ systemImpl::handle_signed_fimware_update(const types::system::FirmwareUpdateRequ
 
     EVLOG_info << "Executing signed firmware update download callback";
 
+    // Capture the running state before (potentially) launching the worker thread. The
+    // worker (download_signed_firmware) sets firmware_download_running once it starts;
+    // deciding the response from the value captured here - rather than re-reading the
+    // flag after the thread is spawned - avoids a race in which the worker flips the
+    // flag first and we report AcceptedCanceled for what is actually a fresh request.
+    const bool download_already_running = this->firmware_download_running.load();
+    const bool installation_running = this->firmware_installation_running.load();
+
     if (firmware_update_request.retrieve_timestamp.has_value() &&
         Everest::Date::from_rfc3339(firmware_update_request.retrieve_timestamp.value()) > date::utc_clock::now()) {
         const auto retrieve_timestamp = Everest::Date::from_rfc3339(firmware_update_request.retrieve_timestamp.value());
@@ -177,9 +215,9 @@ systemImpl::handle_signed_fimware_update(const types::system::FirmwareUpdateRequ
         this->update_firmware_thread.detach();
     }
 
-    if (this->firmware_download_running) {
+    if (download_already_running) {
         return types::system::UpdateFirmwareResponse::AcceptedCanceled;
-    } else if (this->firmware_installation_running) {
+    } else if (installation_running) {
         return types::system::UpdateFirmwareResponse::Rejected;
     } else {
         return types::system::UpdateFirmwareResponse::Accepted;
@@ -221,6 +259,7 @@ void systemImpl::download_signed_firmware(const types::system::FirmwareUpdateReq
     const auto firmware_file_path = create_temp_file(fs::temp_directory_path(), "signed_firmware-" + date_time);
 
     const auto firmware_downloader = this->scripts_path / SIGNED_FIRMWARE_DOWNLOADER;
+    const auto firmware_metadata_parser = this->scripts_path / SIGNED_FIRMWARE_METADATA_PARSER;
     const auto constants = this->scripts_path / CONSTANTS;
 
     const std::vector<std::string> download_args = {
@@ -242,7 +281,11 @@ void systemImpl::download_signed_firmware(const types::system::FirmwareUpdateReq
             firmware_downloader.string(), download_args, [this, &firmware_status](const std::string& output_line) {
                 firmware_status.firmware_update_status =
                     types::system::string_to_firmware_update_status_enum(output_line);
-                this->publish_firmware_update_status(firmware_status);
+                // Defer sending the SignatureVerified message because it needs to have the metadata attached to it
+                if (firmware_status.firmware_update_status !=
+                    types::system::FirmwareUpdateStatusEnum::SignatureVerified) {
+                    this->publish_firmware_update_status(firmware_status);
+                }
                 if (this->interrupt_firmware_download) {
                     EVLOG_info << "Updating firmware was interrupted, terminating firmware update script, requestId: "
                                << firmware_status.request_id;
@@ -257,7 +300,36 @@ void systemImpl::download_signed_firmware(const types::system::FirmwareUpdateReq
         }
     }
     if (firmware_status.firmware_update_status == types::system::FirmwareUpdateStatusEnum::SignatureVerified) {
-        this->initialize_firmware_installation(firmware_update_request, firmware_file_path);
+        const std::vector<std::string> parser_args = {constants.string(), firmware_update_request.location,
+                                                      firmware_file_path.string()};
+        std::map<std::string, std::string> parsed_metadata;
+        auto terminated = false;
+        run_application(firmware_metadata_parser.string(), parser_args,
+                        [&parsed_metadata, &terminated](const std::string& output_line) {
+                            if (output_line.rfind('#', 0) == 0) {
+                                return CmdControl::Continue;
+                            }
+
+                            std::string key;
+                            std::string value;
+                            if (!split_key_value(output_line, key, value)) {
+                                EVLOG_error << "Firmware metadata parser returned invalid data: " << output_line;
+                                terminated = true;
+                                return CmdControl::Terminate;
+                            }
+                            parsed_metadata[key] = value;
+                            return CmdControl::Continue;
+                        });
+        if (!terminated) {
+            types::system::FirmwareUpdateMetadata metadata;
+            if (parsed_metadata.count("disable_connectors_during_install") != 0) {
+                metadata.disable_connectors_during_install =
+                    parsed_metadata["disable_connectors_during_install"] == "true";
+            }
+            firmware_status.firmware_update_metadata.emplace(metadata);
+            this->publish_firmware_update_status(firmware_status);
+            this->initialize_firmware_installation(firmware_update_request, firmware_file_path);
+        }
     }
 
     this->firmware_download_running = false;
@@ -299,7 +371,8 @@ void systemImpl::install_signed_firmware(const types::system::FirmwareUpdateRequ
         this->firmware_installation_running = true;
         const auto firmware_installer = this->scripts_path / SIGNED_FIRMWARE_INSTALLER;
         const auto constants = this->scripts_path / CONSTANTS;
-        const std::vector<std::string> install_args = {constants.string()};
+        const std::vector<std::string> install_args = {constants.string(), firmware_update_request.location,
+                                                       firmware_file_path.string()};
         run_application(firmware_installer.string(), install_args,
                         [this, &firmware_status](const std::string& output_line) {
                             firmware_status.firmware_update_status =
@@ -308,14 +381,27 @@ void systemImpl::install_signed_firmware(const types::system::FirmwareUpdateRequ
                             return CmdControl::Continue;
                         });
         if (firmware_status.firmware_update_status == types::system::FirmwareUpdateStatusEnum::Installed) {
-            if (!this->mod->r_store.empty()) {
-                this->mod->r_store.at(0)->call_store(boot_reason_key,
-                                                     boot_reason_to_string(types::system::BootReason::FirmwareUpdate));
-            }
+            if (this->mod->config.ResetAfterUpdate) {
+                firmware_status.firmware_update_status = types::system::FirmwareUpdateStatusEnum::InstallRebooting;
+                this->publish_firmware_update_status(firmware_status);
 
-            auto reset_type = types::system::ResetType::Hard;
-            bool firmware_installation_running_copy = this->firmware_installation_running;
-            this->handle_reset(reset_type, firmware_installation_running_copy);
+                if (!this->mod->r_store.empty()) {
+                    this->mod->r_store.at(0)->call_store(
+                        boot_reason_key, boot_reason_to_string(types::system::BootReason::FirmwareUpdate));
+                }
+
+                auto reset_type = types::system::ResetType::Hard;
+                bool firmware_installation_running_copy = this->firmware_installation_running;
+                this->handle_reset(reset_type, firmware_installation_running_copy);
+            } else {
+                EVLOG_info << "Firmware installed but ResetAfterUpdate is false - skipping reset.";
+                this->firmware_installation_running = false;
+            }
+        } else {
+            // Installation finished without reaching Installed, so no reset is triggered.
+            // Clear the flag so that a subsequent firmware update request is not rejected
+            // by the firmware_installation_running guard above.
+            this->firmware_installation_running = false;
         }
     } else {
         firmware_status.firmware_update_status = types::system::FirmwareUpdateStatusEnum::InstallationFailed;

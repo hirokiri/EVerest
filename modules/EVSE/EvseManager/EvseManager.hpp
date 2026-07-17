@@ -63,6 +63,7 @@ struct Conf {
     bool payment_enable_eim;
     bool payment_enable_contract;
     double ac_nominal_voltage;
+    double ac_max_reactive_power;
     bool ev_receipt_required;
     bool session_logging;
     std::string session_logging_path;
@@ -107,6 +108,7 @@ struct Conf {
     std::string switch_3ph1ph_cp_state;
     int soft_over_current_timeout_ms;
     bool lock_connector_in_state_b;
+    bool unlock_when_deauthorized;
     int state_F_after_fault_ms;
     bool fail_on_powermeter_errors;
     bool raise_mrec9;
@@ -186,7 +188,6 @@ public:
 
     // ev@1fce4c5e-0ab8-41bb-90f7-14277703d2ac:v1
     // insert your public definitions here
-    std::unique_ptr<Charger> charger;
     sigslot::signal<int> signalNrOfPhasesAvailable;
     types::powermeter::Powermeter get_latest_powermeter_data_billing();
     types::evse_board_support::HardwareCapabilities get_hw_capabilities();
@@ -245,6 +246,8 @@ public:
     std::unique_ptr<IECStateMachine> bsp;
     std::unique_ptr<ErrorHandling> error_handling;
     std::unique_ptr<PersistentStore> store;
+    // Declared last so it is destroyed first; ~Charger dereferences bsp/error_handling/store.
+    std::unique_ptr<Charger> charger;
 
     std::atomic_bool random_delay_enabled{false};
     std::atomic_bool random_delay_running{false};
@@ -406,6 +409,7 @@ private:
 
     static constexpr double CABLECHECK_CURRENT_LIMIT{2};
     static constexpr double CABLECHECK_INSULATION_FAULT_RESISTANCE_OHM{100000.};
+    static constexpr double CABLECHECK_MCS_INSULATION_FAULT_RESISTANCE_OHM{125000.};
     static constexpr double CABLECHECK_SAFE_VOLTAGE{60.};
     static constexpr int CABLECHECK_SELFTEST_TIMEOUT{30};
 

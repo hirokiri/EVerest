@@ -57,6 +57,7 @@ struct ChargerTest : public testing::Test {
     std::vector<std::unique_ptr<isolation_monitorIntf>> error_handler_imd;
     std::vector<std::unique_ptr<power_supply_DCIntf>> error_handler_powersupply;
     std::vector<std::unique_ptr<powermeterIntf>> error_handler_powermeter;
+    std::vector<std::unique_ptr<slacIntf>> error_handler_slac;
     std::vector<std::unique_ptr<over_voltage_monitorIntf>> error_handler_over_voltage_monitor;
 
     std::unique_ptr<ChargerDerived> charger;
@@ -65,7 +66,7 @@ struct ChargerTest : public testing::Test {
         charger_error_handling(std::make_unique<ErrorHandling>(
             error_handler_bsp, error_handler_hlc, error_handler_connector_lock, error_handler_ac_rcd,
             error_handler_evse, error_handler_imd, error_handler_powersupply, error_handler_powermeter,
-            error_handler_over_voltage_monitor, false)) {
+            error_handler_slac, error_handler_over_voltage_monitor, false)) {
     }
 
     void SetUp() override {
@@ -781,8 +782,8 @@ namespace module {
 
 // ----------------------------------------------------------------------------
 // IECStateMachine stub
-IECStateMachine::IECStateMachine(const std::unique_ptr<evse_board_supportIntf>& r_bsp_,
-                                 bool lock_connector_in_state_b_) :
+IECStateMachine::IECStateMachine(const std::unique_ptr<evse_board_supportIntf>& r_bsp_, bool lock_connector_in_state_b_,
+                                 bool use_authorized_) :
     r_bsp(r_bsp_) {
 }
 void IECStateMachine::process_bsp_event(const types::board_support_common::BspEvent& bsp_event) {
@@ -812,6 +813,9 @@ void IECStateMachine::enable(bool en) {
 }
 
 void IECStateMachine::connector_force_unlock() {
+}
+
+void IECStateMachine::set_authorized(bool a) {
 }
 
 const std::string cpevent_to_string(CPEvent e) {
@@ -848,6 +852,7 @@ ErrorHandling::ErrorHandling(const std::unique_ptr<evse_board_supportIntf>& r_bs
                              const std::vector<std::unique_ptr<isolation_monitorIntf>>& _r_imd,
                              const std::vector<std::unique_ptr<power_supply_DCIntf>>& _r_powersupply,
                              const std::vector<std::unique_ptr<powermeterIntf>>& _r_powermeter,
+                             const std::vector<std::unique_ptr<slacIntf>>& _r_slac,
                              const std::vector<std::unique_ptr<over_voltage_monitorIntf>>& _r_over_voltage_monitor,
                              bool _inoperative_error_use_vendor_id) :
     r_bsp(r_bsp),
@@ -858,6 +863,7 @@ ErrorHandling::ErrorHandling(const std::unique_ptr<evse_board_supportIntf>& r_bs
     r_imd(_r_imd),
     r_powersupply(r_powersupply),
     r_powermeter(_r_powermeter),
+    r_slac(_r_slac),
     r_over_voltage_monitor(_r_over_voltage_monitor),
     inoperative_error_use_vendor_id(_inoperative_error_use_vendor_id) {
 }

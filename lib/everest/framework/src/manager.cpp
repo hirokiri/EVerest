@@ -640,6 +640,8 @@ int Manager::run() {
 
     Logging::init(ms.runtime_settings.logging_config_file.string());
 
+    Date::preload_tzdb();
+
     print_start_message(ms.version_information);
 
     if (not ms.mqtt_settings.uses_socket()) {

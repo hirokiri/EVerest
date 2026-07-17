@@ -2,16 +2,20 @@
 // Copyright 2023 Pionix GmbH and Contributors to EVerest
 #pragma once
 
-#include <list>
+#include <atomic>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include <everest/util/async/monitor.hpp>
+
 #include "config.hpp"
 #include <iso15118/d20/config.hpp>
 #include <iso15118/d20/control_event.hpp>
 #include <iso15118/d20/limits.hpp>
+#include <iso15118/io/connection_abstract.hpp>
 #include <iso15118/io/poll_manager.hpp>
 #include <iso15118/io/sdp_server.hpp>
 #include <iso15118/io/time.hpp>
@@ -22,7 +26,7 @@
 namespace iso15118 {
 
 struct TbdConfig {
-    config::SSLConfig ssl{config::CertificateBackend::EVEREST_LAYOUT, {}, {}, {}, {}, {}, {}};
+    config::SSLConfig ssl{};
     std::string interface_name;
     config::TlsNegotiationStrategy tls_negotiation_strategy{config::TlsNegotiationStrategy::ACCEPT_CLIENT_OFFER};
     bool enable_sdp_server{true};
@@ -30,9 +34,22 @@ struct TbdConfig {
 
 class TbdController {
 public:
+    // Creates the connection for sessions when the SDP server is disabled.
+    using ConnectionFactory =
+        std::function<std::unique_ptr<io::IConnection>(io::PollManager&, const std::string& interface_name)>;
+
     TbdController(TbdConfig, session::feedback::Callbacks, d20::EvseSetupConfig);
+    TbdController(TbdConfig, session::feedback::Callbacks, d20::EvseSetupConfig, ConnectionFactory);
+    ~TbdController();
 
     void loop();
+    void tick();
+
+    bool has_active_session() const {
+        return session != nullptr;
+    }
+
+    void shutdown();
 
     void send_control_event(const d20::ControlEvent&);
 
@@ -47,11 +64,20 @@ public:
 
     void set_dlink_ready(bool ready);
 
+    void update_supported_der_functions(iec::DERControlName der_control, const iec::DERControlFunction& function);
+    void update_unsupported_der_functions(iec::DERControlName der_control);
+
 private:
     io::PollManager poll_manager;
     std::unique_ptr<io::SdpServer> sdp_server;
 
     std::unique_ptr<Session> session;
+
+    std::atomic_bool shutdown_active{false};
+    std::atomic_bool terminate_session_requested{false};
+
+    bool shutdown_signaled{false};
+    TimePoint next_event{};
 
     // callbacks for sdp server
     void handle_sdp_server_input();
@@ -59,7 +85,7 @@ private:
     const TbdConfig config;
     const session::feedback::Callbacks callbacks;
 
-    d20::EvseSetupConfig evse_setup;
+    everest::lib::util::monitor<d20::EvseSetupConfig> evse_setup;
 
     std::string interface_name;
 
@@ -67,6 +93,8 @@ private:
 
     static constexpr uint32_t V2G_COMMUNICATION_SETUP_TIMEOUT_MS{18000};
     std::optional<Timeout> communication_setup_timeout;
+
+    ConnectionFactory connection_factory;
 };
 
 } // namespace iso15118

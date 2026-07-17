@@ -327,6 +327,12 @@
             "minimum": 0,
             "default": 60
         },
+        "SwitchSecurityProfileConnectionTimeout": {
+            "$comment": "Timeout in seconds for a security profile switch to establish a connection before reverting to the previous profile. When unset, the built-in default is used.",
+            "type": "integer",
+            "readOnly": false,
+            "minimum": 1
+        },
         "QueueAllMessages": {
             "$comment": "If set to true, also non-transactional messages are queued in memory in case they cannot be sent immediately.",
             "type": "boolean",
@@ -335,7 +341,7 @@
         "MessageTypesDiscardForQueueing": {
             "$comment": "Comma seperated list of message types that shall not be queued (when offline) even in case QueueAllMessages is true. If QueueAllMessages is false, the configuration of this paramater has no effect.",
             "type": "string",
-            "readOnly": true   
+            "readOnly": true
         },
         "MessageQueueSizeThreshold": {
             "$comment": "Threshold for the size of in-memory message queues used to buffer messages (and store e.g. while offline). If threshold is exceeded, messages  will be dropped according to OCPP specification to avoid memory issues.",

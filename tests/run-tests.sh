@@ -8,7 +8,7 @@ set -euo pipefail
 # Suites:
 #   all             All tests
 #
-#   integration     Core, framework, and async API tests
+#   integration     Core, framework, async API, and EEBUS tests
 #   core            Core tests only
 #   framework       Framework tests only
 #   asyncapi        Async API tests only
@@ -18,13 +18,18 @@ set -euo pipefail
 #   ocpp201         OCPP 2.0.1 tests only
 #   ocpp21          OCPP 2.1 tests only
 #
+#   eebus           EEBUS integration tests
+#
 # Options:
+#   -x                   stop on first error
+#   -k PATTERN           run tests that match PATTERN
 #   -j N                 Parallel workers (default: nproc)
 #   --serial             Run tests serially
 #   --everest-prefix P   EVerest install prefix (default: <repo>/build/dist)
 #   --junitxml PATH      JUnit XML output (default: result.xml)
 #   --html PATH          HTML report output (default: report.html)
 #   --no-isolation       Disable network isolation
+#   --ocpp-impl V        OCPP module(s) to test: both (default), legacy, multi
 #   --                   Pass remaining args directly to pytest (e.g. -k ...)
 #   -h, --help           Show this help
 #
@@ -41,12 +46,15 @@ PYTHON="${PYTHON_INTERPRETER:-python3}"
 # Defaults
 WORKERS="${PARALLEL_TESTS:-$(nproc)}"
 SERIAL=false
+STOP_ON_ERROR=false
+PATTERN=
 PREFIX="${EVEREST_PREFIX:-${EVEREST_CORE_DIR}/build/dist}"
 JUNITXML="result.xml"
 HTML="report.html"
 ISOLATION="${NETWORK_ISOLATION:-true}"
 SUITE=""
 EXTRA_PYTEST_ARGS=()
+OCPP_IMPL="both"
 
 usage() {
     sed -n '3,/^$/s/^# \?//p' "$0"
@@ -56,11 +64,14 @@ usage() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -j)                WORKERS="$2"; shift 2;;
+        -k)                PATTERN="$2"; shift 2;;
+        -x)                STOP_ON_ERROR=true; shift;;
         --serial)          SERIAL=true; shift;;
         --everest-prefix)  PREFIX="$2"; shift 2;;
         --junitxml)        JUNITXML="$2"; shift 2;;
         --html)            HTML="$2"; shift 2;;
         --no-isolation)    ISOLATION=false; shift;;
+        --ocpp-impl)       OCPP_IMPL="$2"; shift 2;;
         --)                shift; EXTRA_PYTEST_ARGS+=("$@"); break;;
         -h|--help)         usage;;
         -*)                echo "Unknown option: $1" >&2; exit 1;;
@@ -73,6 +84,11 @@ if [[ -z "$SUITE" ]]; then
     echo "Run '$(basename "$0") --help' for usage." >&2
     exit 1
 fi
+
+case "$OCPP_IMPL" in
+    both|legacy|multi) ;;
+    *) echo "Error: --ocpp-impl must be one of: both, legacy, multi (got '$OCPP_IMPL')." >&2; exit 1;;
+esac
 
 echo "Suite:   $SUITE"
 echo "Python:  $PYTHON"
@@ -148,7 +164,7 @@ fi
 PYTEST_ARGS=(
     -rA
     --self-contained-html
-    --max-worker-restart=100  # allow worker restarts for debugging purposes 
+    --max-worker-restart=100  # allow worker restarts for debugging purposes
     --timeout=300
     --everest-prefix "$PREFIX"
     --config-file "$SCRIPT_DIR/pytest.ini"
@@ -159,6 +175,16 @@ if [[ "$SERIAL" == "false" ]]; then
     PYTEST_ARGS+=(-n "$WORKERS" --dist=loadgroup)
 else
     echo "Workers: serial"
+fi
+
+if [[ "$STOP_ON_ERROR" == "true" ]]; then
+    echo "Stopping on first error"
+    PYTEST_ARGS+=(-x)
+fi
+
+if [[ "N$PATTERN" != "N" ]]; then
+    echo "running tests that match: $PATTERN"
+    PYTEST_ARGS+=(-k "$PATTERN")
 fi
 
 [[ -n "$ISOLATION_FLAG" ]] && PYTEST_ARGS+=("$ISOLATION_FLAG")
@@ -176,6 +202,11 @@ for arg in "${EXTRA_PYTEST_ARGS[@]}"; do
     fi
 done
 
+# --ocpp-impl is registered in ocpp_tests/conftest.py, so it is only passed
+# to suites that include OCPP targets (via SUITE_PYTEST_ARGS below).
+OCPP_IMPL_ARGS=(--ocpp-impl "$OCPP_IMPL")
+SUITE_PYTEST_ARGS=()
+
 run_pytest_suite() {
     local default_targets=("$@")
     local selected_targets=("${default_targets[@]}")
@@ -184,6 +215,7 @@ run_pytest_suite() {
     fi
 
     "$PYTHON" -m pytest "${PYTEST_ARGS[@]}" \
+        "${SUITE_PYTEST_ARGS[@]}" \
         "${EXTRA_PYTEST_ARGS[@]}" \
         --junitxml="$JUNITXML" --html="$HTML" \
         "${selected_targets[@]}"
@@ -207,13 +239,15 @@ case "$SUITE" in
 
         setup_ocpp
 
+        SUITE_PYTEST_ARGS=("${OCPP_IMPL_ARGS[@]}")
         run_pytest_suite \
             core_tests/*.py \
             framework_tests/*.py \
             async_api_tests/*.py \
             ocpp_tests/test_sets/ocpp16/*.py \
             ocpp_tests/test_sets/ocpp201/*.py \
-            ocpp_tests/test_sets/ocpp21/*.py
+            ocpp_tests/test_sets/ocpp21/*.py \
+            eebus_tests/eebus_tests.py
         ;;
 
     integration)
@@ -221,7 +255,8 @@ case "$SUITE" in
         run_pytest_suite \
             core_tests/*.py \
             framework_tests/*.py \
-            async_api_tests/*.py
+            async_api_tests/*.py \
+            eebus_tests/eebus_tests.py
         ;;
 
     core)
@@ -245,6 +280,7 @@ case "$SUITE" in
     ocpp)
         setup_ocpp
         cd "$SCRIPT_DIR"
+        SUITE_PYTEST_ARGS=("${OCPP_IMPL_ARGS[@]}")
         run_pytest_suite \
             ocpp_tests/test_sets/ocpp16/*.py \
             ocpp_tests/test_sets/ocpp201/*.py \
@@ -254,6 +290,7 @@ case "$SUITE" in
     ocpp16)
         setup_ocpp
         cd "$SCRIPT_DIR"
+        SUITE_PYTEST_ARGS=("${OCPP_IMPL_ARGS[@]}")
         run_pytest_suite \
             ocpp_tests/test_sets/ocpp16/*.py
         ;;
@@ -261,6 +298,7 @@ case "$SUITE" in
     ocpp201)
         setup_ocpp
         cd "$SCRIPT_DIR"
+        SUITE_PYTEST_ARGS=("${OCPP_IMPL_ARGS[@]}")
         run_pytest_suite \
             ocpp_tests/test_sets/ocpp201/*.py
         ;;
@@ -268,13 +306,20 @@ case "$SUITE" in
     ocpp21)
         setup_ocpp
         cd "$SCRIPT_DIR"
+        SUITE_PYTEST_ARGS=("${OCPP_IMPL_ARGS[@]}")
         run_pytest_suite \
             ocpp_tests/test_sets/ocpp21/*.py
         ;;
 
+    eebus)
+        cd "$SCRIPT_DIR"
+        run_pytest_suite \
+            eebus_tests/eebus_tests.py
+        ;;
+
     *)
         echo "Unknown suite: $SUITE" >&2
-        echo "Valid suites: all, integration, core, framework, asyncapi, ocpp, ocpp16, ocpp201, ocpp21" >&2
+        echo "Valid suites: all, integration, core, framework, asyncapi, ocpp, ocpp16, ocpp201, ocpp21, eebus" >&2
         exit 1
         ;;
 

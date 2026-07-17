@@ -12,11 +12,15 @@
 #include <iso15118/d20/ev_information.hpp>
 #include <iso15118/message/ac_charge_loop.hpp>
 #include <iso15118/message/ac_charge_parameter_discovery.hpp>
+#include <iso15118/message/ac_der_iec_charge_loop.hpp>
+#include <iso15118/message/ac_der_iec_charge_parameter_discovery.hpp>
 #include <iso15118/message/dc_charge_loop.hpp>
 #include <iso15118/message/service_detail.hpp>
 #include <iso15118/message/type.hpp>
 
 #include <everest/util/vector/fixed_vector.hpp>
+
+#include "conversions.hpp"
 
 static constexpr auto NUMBER_OF_SETUP_STEPS = 5;
 
@@ -115,14 +119,26 @@ constexpr types::iso15118::V2gMessageId convert_v2g_message_type(iso15118::messa
         return Id::AcChargeLoopReq;
     case Type::AC_ChargeLoopRes:
         return Id::AcChargeLoopRes;
+    case Type::DER_AC_ChargeParameterDiscoveryReq:
+        return Id::AcDerChargeParameterDiscoveryReq;
+    case Type::DER_AC_ChargeParameterDiscoveryRes:
+        return Id::AcDerChargeParameterDiscoveryRes;
+    case Type::DER_AC_ChargeLoopReq:
+        return Id::AcDerChargeLoopReq;
+    case Type::DER_AC_ChargeLoopRes:
+        return Id::AcDerChargeLoopRes;
+    case Type::DER_SAE_AC_ChargeParameterDiscoveryReq:
+        return Id::AcDerSaeChargeParameterDiscoveryReq;
+    case Type::DER_SAE_AC_ChargeParameterDiscoveryRes:
+        return Id::AcDerSaeChargeParameterDiscoveryRes;
+    case Type::DER_SAE_AC_ChargeLoopReq:
+        return Id::AcDerSaeChargeLoopReq;
+    case Type::DER_SAE_AC_ChargeLoopRes:
+        return Id::AcDerSaeChargeLoopRes;
     }
 
     return Id::UnknownMessage;
 }
-
-std::optional<float> convert_from_optional(const std::optional<dt::RationalNumber>& in);
-std::optional<dt::RationalNumber> convert_from_optional(const std::optional<float>& in);
-std::optional<float> convert_from_optional(const std::optional<uint32_t>& in);
 
 types::iso15118::AppProtocol convert_app_protocol(const iso15118::message_20::SupportedAppProtocol& app_protocol);
 types::iso15118::EvInformation convert_ev_info(const iso15118::d20::EVInformation& ev_info);
@@ -145,6 +161,9 @@ types::iso15118::AcEvPowerLimits fill_ac_ev_power_limits(const dt::Dynamic_AC_CL
 types::iso15118::AcEvPowerLimits fill_ac_ev_power_limits(const dt::BPT_Dynamic_AC_CLReqControlMode& mode);
 types::iso15118::AcEvPowerLimits fill_ac_ev_power_limits(const dt::Scheduled_AC_CLReqControlMode& mode);
 types::iso15118::AcEvPowerLimits fill_ac_ev_power_limits(const dt::BPT_Scheduled_AC_CLReqControlMode& mode);
+types::iso15118::AcEvPowerLimits fill_ac_ev_power_limits(const dt::DER_AC_CPDReqEnergyTransferMode& mode);
+types::iso15118::AcEvPowerLimits fill_ac_ev_power_limits(const dt::DER_Scheduled_AC_CLReqControlMode& mode);
+types::iso15118::AcEvPowerLimits fill_ac_ev_power_limits(const dt::DER_Dynamic_AC_CLReqControlMode& mode);
 
 types::iso15118::AcEvPresentPowerValues fill_ac_ev_present_power_values(const dt::Dynamic_AC_CLReqControlMode& mode);
 types::iso15118::AcEvPresentPowerValues fill_ac_ev_present_power_values(const dt::Scheduled_AC_CLReqControlMode& mode);

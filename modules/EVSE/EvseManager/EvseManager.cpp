@@ -317,7 +317,7 @@ void EvseManager::init() {
 }
 
 void EvseManager::ready() {
-    bsp = std::make_unique<IECStateMachine>(r_bsp, config.lock_connector_in_state_b);
+    bsp = std::make_unique<IECStateMachine>(r_bsp, config.lock_connector_in_state_b, config.unlock_when_deauthorized);
 
     if (config.hack_simplified_mode_limit_10A) {
         bsp->set_ev_simplified_mode_evse_limit(true);
@@ -327,7 +327,7 @@ void EvseManager::ready() {
     // otherwise we provide an empty vector of pointers to the powermeter interface
     error_handling = std::unique_ptr<ErrorHandling>(
         new ErrorHandling(r_bsp, r_hlc, r_connector_lock, r_ac_rcd, p_evse, r_imd, r_powersupply_DC,
-                          config.fail_on_powermeter_errors ? r_powermeter_billing() : EMPTY_POWERMETER_VECTOR,
+                          config.fail_on_powermeter_errors ? r_powermeter_billing() : EMPTY_POWERMETER_VECTOR, r_slac,
                           r_over_voltage_monitor, config.inoperative_error_use_vendor_id));
 
     internal_over_voltage_monitor = std::make_unique<OverVoltageMonitor>(
@@ -343,7 +343,12 @@ void EvseManager::ready() {
 
     if (not config.lock_connector_in_state_b) {
         EVLOG_warning << "Unlock connector in CP state B. This violates IEC61851-1:2019 D.6.5 Table D.9 line 4 and "
-                         "should not be used in public environments!";
+                         "should not be used in public environments! This feature is deprecated.";
+    }
+
+    if (config.unlock_when_deauthorized) {
+        EVLOG_warning << "The config `unlock_when_deauthorized` is set to true. This violates "
+                         "IEC61851-1:2019 D.6.5 Table D.9 line 4 and should not be used in public environments!";
     }
 
     const auto hw_caps = *hw_capabilities.handle();
@@ -632,6 +637,9 @@ void EvseManager::ready() {
                     if (internal_over_voltage_monitor) {
                         internal_over_voltage_monitor->update_voltage(voltage_V);
                     }
+                    if (voltage_plausibility_monitor) {
+                        voltage_plausibility_monitor->update_over_voltage_monitor_voltage(voltage_V);
+                    }
                 });
             }
 
@@ -881,12 +889,6 @@ void EvseManager::ready() {
                 if (not r_over_voltage_monitor.empty()) {
                     r_over_voltage_monitor[0]->call_set_limits(get_emergency_over_voltage_threshold(),
                                                                get_error_over_voltage_threshold());
-                    // Subscribe to voltage measurements from over_voltage_monitor for plausibility check
-                    r_over_voltage_monitor[0]->subscribe_voltage_measurement_V([this](float voltage_V) {
-                        if (voltage_plausibility_monitor) {
-                            voltage_plausibility_monitor->update_over_voltage_monitor_voltage(voltage_V);
-                        }
-                    });
                 }
                 if (internal_over_voltage_monitor) {
                     internal_over_voltage_monitor->set_limits(get_emergency_over_voltage_threshold(),
@@ -1880,8 +1882,10 @@ void EvseManager::update_hlc_ac_parameters() {
     if (hw_caps.max_phase_count_import == 3) {
         ac_connectors.push_back(types::iso15118::Connector::ThreePhase);
     }
-    r_hlc[0]->call_update_ac_parameters({50, static_cast<float>(config.ac_nominal_voltage), ac_connectors, std::nullopt,
-                                         std::nullopt}); // TODO(sl): Getting nominal frequency
+    r_hlc[0]->call_update_ac_parameters(
+        {50, static_cast<float>(config.ac_nominal_voltage), ac_connectors, std::nullopt, std::nullopt,
+         config.ac_max_reactive_power > 0 ? std::make_optional(static_cast<float>(config.ac_max_reactive_power))
+                                          : std::nullopt}); // TODO(sl): Getting nominal frequency
 }
 
 void EvseManager::log_v2g_message(types::iso15118::V2gMessages const& v2g_messages) {
@@ -2015,7 +2019,12 @@ bool EvseManager::check_voltage_to_protective_earth_in_range(types::isolation_mo
 }
 
 bool EvseManager::check_isolation_resistance_in_range(double resistance) {
-    if (resistance < CABLECHECK_INSULATION_FAULT_RESISTANCE_OHM) {
+    const double insulation_fault_resistance_ohm =
+        (connector_type.has_value() and connector_type.value() == types::evse_manager::ConnectorTypeEnum::cMCS)
+            ? CABLECHECK_MCS_INSULATION_FAULT_RESISTANCE_OHM
+            : CABLECHECK_INSULATION_FAULT_RESISTANCE_OHM;
+
+    if (resistance < insulation_fault_resistance_ohm) {
         session_log.evse(false, fmt::format("Isolation measurement FAULT R_F {}.", resistance));
         r_hlc[0]->call_update_isolation_status(types::iso15118::IsolationStatus::Fault);
         return false;
@@ -2421,6 +2430,10 @@ void EvseManager::powersupply_DC_off() {
         session_log.evse(false, "DC power supply OFF");
         r_powersupply_DC[0]->call_setMode(types::power_supply_DC::Mode::Off, power_supply_DC_charging_phase);
         powersupply_dc_is_on = false;
+        // Invalidate the powersupply_DC_set() cache: the power supply resets its
+        // internal targets on the Off transition, so the cached values are stale now.
+        last_power_supply_voltage = 0.;
+        last_power_supply_current = 0.;
     }
     power_supply_DC_charging_phase = types::power_supply_DC::ChargingPhase::Other;
 }

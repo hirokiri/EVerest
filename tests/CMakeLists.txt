@@ -40,3 +40,7 @@ endif()
 add_subdirectory(everest-core_tests)
 add_subdirectory(core_tests/config)
 add_subdirectory(async_api_tests)
+
+if (TARGET EEBUS)
+    add_subdirectory(eebus_tests)
+endif()
