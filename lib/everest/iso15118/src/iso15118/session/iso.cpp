@@ -415,10 +415,9 @@ void Session::handle_supported_app_protocol_request(io::v2gtp::PayloadType paylo
         logf_info("Selecting supported app protocol namespace based on the supported energy services");
     }
 
-    const auto result =
-        session::secc_sap::handle_request(*req, config.supported_protocols, config.supported_energy_transfer_services,
-                                          config.selecting_sap_based_on_energy_service, config.custom_protocol,
-                                          connection->is_secure());
+    const auto result = session::secc_sap::handle_request(
+        *req, config.supported_protocols, config.supported_energy_transfer_services,
+        config.selecting_sap_based_on_energy_service, config.custom_protocol, connection->is_secure());
 
     const io::StreamOutputView response_view{response_buffer + io::SdpPacket::V2GTP_HEADER_SIZE,
                                              sizeof(response_buffer) - io::SdpPacket::V2GTP_HEADER_SIZE};

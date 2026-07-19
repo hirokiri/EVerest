@@ -48,8 +48,8 @@ message_2::PaymentServiceSelectionResponse handle_request(const message_2::Payme
     // charge service is guaranteed present here (checked above), so this catches any extra unoffered
     // service (TC PaymentServiceSelection_006).
     for (const auto& s : list) {
-        const bool offered =
-            (s.service_id == charge_service_id) or (cert_service_offered and s.service_id == dt::CERTIFICATE_SERVICE_ID);
+        const bool offered = (s.service_id == charge_service_id) or
+                             (cert_service_offered and s.service_id == dt::CERTIFICATE_SERVICE_ID);
         if (not offered) {
             res.response_code = dt::ResponseCode::FAILED_ServiceSelectionInvalid;
             return res;

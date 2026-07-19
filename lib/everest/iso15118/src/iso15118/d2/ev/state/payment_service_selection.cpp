@@ -42,8 +42,8 @@ d2::ev::Result PaymentServiceSelection::feed(Event ev) {
     if (ev == Event::SEND_REQUEST) {
         // Contract (Plug-and-Charge) is used when the EV prefers it and the SECC offered it; otherwise EIM.
         const bool use_contract = m_ctx.session_config.pnc.prefer_contract and m_ctx.evse_info.contract_offered;
-        const bool install_cert =
-            use_contract and m_ctx.session_config.pnc.needs_cert_install() and m_ctx.evse_info.certificate_service_offered;
+        const bool install_cert = use_contract and m_ctx.session_config.pnc.needs_cert_install() and
+                                  m_ctx.evse_info.certificate_service_offered;
         const auto option = use_contract ? dt::PaymentOption::Contract : dt::PaymentOption::ExternalPayment;
         m_ctx.pnc.contract_selected = use_contract;
 
@@ -90,8 +90,8 @@ d2::ev::Result PaymentServiceSelection::feed(Event ev) {
         // obtained, else present the (pre-installed) contract cert in PaymentDetails; EIM goes straight to
         // Authorization.
         if (m_ctx.pnc.contract_selected) {
-            const bool install_cert = m_ctx.session_config.pnc.needs_cert_install() and
-                                      m_ctx.evse_info.certificate_service_offered;
+            const bool install_cert =
+                m_ctx.session_config.pnc.needs_cert_install() and m_ctx.evse_info.certificate_service_offered;
             if (install_cert) {
                 return m_ctx.create_state<CertificateInstallation>();
             }

@@ -136,9 +136,8 @@ static void convert(const struct iso2_SAScheduleListType& in, datatypes::SASched
             auto& out_st = out_tuple.sales_tariff.emplace();
             out_st.sales_tariff_id = tuple.SalesTariff.SalesTariffID;
             if (tuple.SalesTariff.SalesTariffDescription_isUsed) {
-                out_st.sales_tariff_description =
-                    std::string(tuple.SalesTariff.SalesTariffDescription.characters,
-                                tuple.SalesTariff.SalesTariffDescription.charactersLen);
+                out_st.sales_tariff_description = std::string(tuple.SalesTariff.SalesTariffDescription.characters,
+                                                              tuple.SalesTariff.SalesTariffDescription.charactersLen);
             }
             if (tuple.SalesTariff.NumEPriceLevels_isUsed) {
                 out_st.num_e_price_levels = tuple.SalesTariff.NumEPriceLevels;

@@ -39,8 +39,8 @@ message_2::AuthorizationResponse handle_request([[maybe_unused]] const message_2
     } else {
         // Authorization still pending: [V2G2-855] PnC (Contract) -> Ongoing;
         // [V2G2-854] EIM (External Payment) -> Ongoing_WaitingForCustomerInteraction.
-        res.evse_processing = contract_selected ? dt::EVSEProcessing::Ongoing
-                                                : dt::EVSEProcessing::Ongoing_WaitingForCustomerInteraction;
+        res.evse_processing =
+            contract_selected ? dt::EVSEProcessing::Ongoing : dt::EVSEProcessing::Ongoing_WaitingForCustomerInteraction;
     }
     return res;
 }

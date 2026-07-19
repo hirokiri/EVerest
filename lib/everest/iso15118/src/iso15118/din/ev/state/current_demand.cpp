@@ -40,9 +40,9 @@ Result handle_response(const message_din::CurrentDemandResponse& res) {
     // DIN SECCs commonly keep set throughout the charge loop. [V2G-DC-650]: only EVSE_Shutdown (and
     // EVSE_EmergencyShutdown as the critical-reason counterpart) triggers the stop procedure.
     const auto status = res.dc_evse_status.evse_status_code;
-    const bool charger_stop = (status == dt::DcEvseStatusCode::EVSE_Shutdown or
-                               status == dt::DcEvseStatusCode::EVSE_EmergencyShutdown) or
-                              (res.dc_evse_status.evse_notification == dt::EvseNotification::StopCharging);
+    const bool charger_stop =
+        (status == dt::DcEvseStatusCode::EVSE_Shutdown or status == dt::DcEvseStatusCode::EVSE_EmergencyShutdown) or
+        (res.dc_evse_status.evse_notification == dt::EvseNotification::StopCharging);
     result.charger_state = charger_stop ? ChargerState::Stop : ChargerState::Continue;
     return result;
 }

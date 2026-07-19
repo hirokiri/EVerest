@@ -47,9 +47,8 @@ message_din::CurrentDemandResponse handle_request(const message_din::CurrentDema
     // before the SessionID check below.
     // A module-reported EVSE error (Malfunction / UtilityInterruptEvent / EmergencyShutdown) overrides the
     // status code so the EV sees the fault mid-charge-loop (mirrors EvseV2G send_error).
-    res.dc_evse_status.evse_status_code =
-        error_status_code.value_or(charger_stop ? dt::DcEvseStatusCode::EVSE_Shutdown
-                                                 : dt::DcEvseStatusCode::EVSE_Ready);
+    res.dc_evse_status.evse_status_code = error_status_code.value_or(charger_stop ? dt::DcEvseStatusCode::EVSE_Shutdown
+                                                                                  : dt::DcEvseStatusCode::EVSE_Ready);
     res.dc_evse_status.evse_isolation_status = dt::IsolationLevel::Valid;
     // [V2G-DC-500]: for DC charging the EVSENotification shall always be "None". An EVSE-initiated stop
     // is signalled to the EV via EVSEStatusCode = EVSE_Shutdown (above), not via EVSENotification.
@@ -116,8 +115,9 @@ Result CurrentDemand::feed(Event ev) {
 
         forward_ev_setpoint(*req, m_ctx.feedback);
 
-        const auto res = handle_request(*req, m_ctx.session_config, m_ctx.present_voltage, m_ctx.present_current,
-                                        m_ctx.get_session_id(), m_ctx.charger_stop_requested, m_ctx.error_status_code());
+        const auto res =
+            handle_request(*req, m_ctx.session_config, m_ctx.present_voltage, m_ctx.present_current,
+                           m_ctx.get_session_id(), m_ctx.charger_stop_requested, m_ctx.error_status_code());
         m_ctx.respond(res);
 
         if (res.response_code >= dt::ResponseCode::FAILED) {

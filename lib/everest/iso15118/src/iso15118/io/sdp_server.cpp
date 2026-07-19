@@ -168,8 +168,7 @@ PeerRequestContext SdpServer::get_peer_request() {
     // 0x00000000) is ignored so no SDP response is sent -- the EVCC detects it as an SDP message timeout
     // (TC_SECC_CMN_VTB_V2GTPSDP_002).
     if (sdp_payload_len != SDP_REQUEST_PAYLOAD_LEN) {
-        logf_warning("Sdp server received a request with an invalid payload length (%u), ignoring",
-                     sdp_payload_len);
+        logf_warning("Sdp server received a request with an invalid payload length (%u), ignoring", sdp_payload_len);
         return PeerRequestContext{false};
     }
 

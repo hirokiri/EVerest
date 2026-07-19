@@ -26,7 +26,8 @@ SCENARIO("DIN SECC CableCheck state handling") {
         message_din::CableCheckRequest req;
         req.header.session_id = session;
         // [V2G-DC-890]: a finished-but-failed cable check answers FAILED with Invalid isolation.
-        const auto res = din::state::handle_request(req, /*cable_check_done=*/false, /*cable_check_fault=*/true, session);
+        const auto res =
+            din::state::handle_request(req, /*cable_check_done=*/false, /*cable_check_fault=*/true, session);
         THEN("FAILED, isolation Invalid, EVSE_Malfunction") {
             REQUIRE(res.response_code == dt::ResponseCode::FAILED);
             REQUIRE(res.dc_evse_status.evse_isolation_status == dt::IsolationLevel::Invalid);

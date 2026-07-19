@@ -4,8 +4,8 @@
 
 #include <iso15118/din/state/session_stop.hpp>
 
-#include <iso15118/detail/din/state/session_stop.hpp>
 #include <iso15118/detail/din/state/sequence_error.hpp>
+#include <iso15118/detail/din/state/session_stop.hpp>
 #include <iso15118/detail/din/state/state_helper.hpp>
 #include <iso15118/detail/din/state/welding_detection.hpp>
 #include <iso15118/detail/helper.hpp>
@@ -81,8 +81,7 @@ Result WeldingDetection::feed(Event ev) {
             welding_started = true;
         }
 
-        const auto res =
-            handle_request(*req, m_ctx.present_voltage, m_ctx.get_session_id(), m_ctx.error_status_code());
+        const auto res = handle_request(*req, m_ctx.present_voltage, m_ctx.get_session_id(), m_ctx.error_status_code());
         m_ctx.respond(res);
 
         if (res.response_code >= dt::ResponseCode::FAILED) {

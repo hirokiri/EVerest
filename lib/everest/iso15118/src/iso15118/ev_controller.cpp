@@ -238,9 +238,8 @@ void EvController::arm_session(const PendingStart& start) {
 
         // DIN SPEC 70121 is plaintext-only; do not offer it over TLS [V2G-DC-868]. Determine whether this
         // attempt will use TLS (a resumed session keeps its negotiated security).
-        const bool secure = paused_session.has_value()
-                                ? (paused_session->security == io::v2gtp::Security::TLS)
-                                : (config.use_tls or config.enforce_tls);
+        const bool secure = paused_session.has_value() ? (paused_session->security == io::v2gtp::Security::TLS)
+                                                       : (config.use_tls or config.enforce_tls);
         if (secure) {
             auto& protos = session_setup.supported_protocols;
             protos.erase(std::remove(protos.begin(), protos.end(), ProtocolId::DIN70121), protos.end());

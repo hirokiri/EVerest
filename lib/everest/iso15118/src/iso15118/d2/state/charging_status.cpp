@@ -50,8 +50,7 @@ Result ChargingStatus::feed(Event ev) {
             info.meter_id = meter->meter_id;
             info.meter_reading = meter->meter_reading_wh;
             m_ctx.latest_meter_info = info;
-        } else if (const auto* stop = m_ctx.get_control_event<d20::StopCharging>();
-                   stop and static_cast<bool>(*stop)) {
+        } else if (const auto* stop = m_ctx.get_control_event<d20::StopCharging>(); stop and static_cast<bool>(*stop)) {
             m_ctx.charger_stop_requested = true;
         }
         return {};

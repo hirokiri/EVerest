@@ -77,8 +77,8 @@ Result ServiceDetail::feed(Event ev) {
     // when the SECC actually provides certificate installation/update.
     const bool cert_service_offered = m_ctx.session_config.pnc_enabled and m_ctx.session_config.tls_active and
                                       m_ctx.session_config.cert_install_service;
-    const auto res = handle_request(req, m_ctx.get_session_id(), m_ctx.session_config.charge_service_id,
-                                    cert_service_offered);
+    const auto res =
+        handle_request(req, m_ctx.get_session_id(), m_ctx.session_config.charge_service_id, cert_service_offered);
     m_ctx.respond(res);
 
     if (res.response_code >= dt::ResponseCode::FAILED) {

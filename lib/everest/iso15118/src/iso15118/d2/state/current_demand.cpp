@@ -141,10 +141,9 @@ Result CurrentDemand::feed(Event ev) {
     // Request a signed MeteringReceipt (PnC only, when configured and not yet received).
     const bool request_receipt =
         m_ctx.session_config.receipt_required and m_ctx.contract_selected and not m_ctx.receipt_received;
-    auto res =
-        handle_request(req, m_ctx.get_session_id(), m_ctx.session_config, m_ctx.present_voltage, m_ctx.present_current,
-                       m_ctx.sa_schedule_tuple_id, m_ctx.charger_stop_requested, request_receipt,
-                       m_ctx.latest_meter_info);
+    auto res = handle_request(req, m_ctx.get_session_id(), m_ctx.session_config, m_ctx.present_voltage,
+                              m_ctx.present_current, m_ctx.sa_schedule_tuple_id, m_ctx.charger_stop_requested,
+                              request_receipt, m_ctx.latest_meter_info);
     // Stamp a module-reported EVSE error (Malfunction / UtilityInterruptEvent) into the status code so the
     // EV sees the fault mid-charge-loop (EmergencyShutdown additionally aborts, handled in the engine).
     apply_evse_error(m_ctx, res.dc_evse_status);

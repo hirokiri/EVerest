@@ -17,8 +17,8 @@ message_20::SupportedAppProtocolRequest make_request(const std::string& protocol
 }
 
 session::secc_sap::HandleResult negotiate(const message_20::SupportedAppProtocolRequest& req) {
-    return session::secc_sap::handle_request(req, {ProtocolId::ISO15118_20, ProtocolId::ISO15118_2, ProtocolId::DIN70121},
-                                             {}, false, std::nullopt, false);
+    return session::secc_sap::handle_request(
+        req, {ProtocolId::ISO15118_20, ProtocolId::ISO15118_2, ProtocolId::DIN70121}, {}, false, std::nullopt, false);
 }
 
 } // namespace
@@ -60,7 +60,7 @@ SCENARIO("SECC SupportedAppProtocol version matching [V2G2-170][V2G2-172]") {
 
     GIVEN("A non-matching ISO 15118-2 major version alongside a supported ISO 15118-20 offer") {
         message_20::SupportedAppProtocolRequest req;
-        req.app_protocol.push_back({ISO2_NAMESPACE, 3, 0, 1, 1});       // highest priority, unsupported major
+        req.app_protocol.push_back({ISO2_NAMESPACE, 3, 0, 1, 1}); // highest priority, unsupported major
         req.app_protocol.push_back({ISO20_DC_PROTOCOL_NAMESPACE, 1, 0, 2, 2});
 
         const auto result = negotiate(req);

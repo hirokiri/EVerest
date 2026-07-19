@@ -88,8 +88,7 @@ std::string contract_scalar_to_pem(const std::vector<uint8_t>& scalar);
 
 // Concatenate a DER leaf certificate and its DER sub-certificates into a single PEM chain (leaf first).
 // Returns empty on failure.
-std::string der_chain_to_pem(const std::vector<uint8_t>& leaf_der,
-                             const std::vector<std::vector<uint8_t>>& subs_der);
+std::string der_chain_to_pem(const std::vector<uint8_t>& leaf_der, const std::vector<std::vector<uint8_t>>& subs_der);
 
 // Extract the eMAID from a contract leaf certificate (DER): its CommonName with '-' characters removed.
 // Returns empty on failure. Used by the module to fill PaymentDetailsReq.eMAID from a configured contract

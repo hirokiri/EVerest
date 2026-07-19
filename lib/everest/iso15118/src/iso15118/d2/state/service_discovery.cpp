@@ -84,9 +84,9 @@ Result ServiceDiscovery::feed(Event ev) {
     // Certificate service is offered under that same condition and only when cert installation is supported.
     const bool offer_contract = m_ctx.session_config.pnc_enabled and m_ctx.session_config.tls_active;
     const bool cert_service_offered = offer_contract and m_ctx.session_config.cert_install_service;
-    const auto res = handle_request(*req, m_ctx.get_session_id(), m_ctx.session_config.charge_service_id,
-                                    m_ctx.session_config.supported_energy_transfer_modes, offer_contract,
-                                    cert_service_offered);
+    const auto res =
+        handle_request(*req, m_ctx.get_session_id(), m_ctx.session_config.charge_service_id,
+                       m_ctx.session_config.supported_energy_transfer_modes, offer_contract, cert_service_offered);
     m_ctx.respond(res);
 
     return m_ctx.create_state<ServiceDetail>();

@@ -36,7 +36,7 @@
 // writing past the array) when the source has more elements than the generated array can hold.
 #define CPP2CB_ARRAY_SIZE_CHECK(count, out_array)                                                                      \
     if ((count) > (sizeof(out_array) / sizeof((out_array)[0]))) {                                                      \
-        throw std::runtime_error("Too many elements for target array");                                               \
+        throw std::runtime_error("Too many elements for target array");                                                \
     }
 
 #define CB_SET_USED(property) (property##_isUsed = 1)

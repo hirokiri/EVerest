@@ -151,8 +151,7 @@ iso15118::d2::ev::PnCConfig build_pnc_config(const module::Conf& config, const s
     }
 
     // OEM provisioning certificate + key (only used when a CertificateInstallation must run).
-    const auto oem_pem =
-        read_file_text(resolve(config.pnc_oem_prov_cert_path, certs_path / "client/oem/OEM_LEAF.pem"));
+    const auto oem_pem = read_file_text(resolve(config.pnc_oem_prov_cert_path, certs_path / "client/oem/OEM_LEAF.pem"));
     const auto oem_der = crypto::pem_chain_to_der(oem_pem);
     if (not oem_der.empty()) {
         pnc.oem_prov_cert_der = oem_der.front();
@@ -497,8 +496,8 @@ iso15118::session::ev::feedback::Callbacks ISO15118_evImpl::create_callbacks() {
         // A contract certificate was installed via CertificateInstallation. Persisting it across sessions
         // (e.g. to EvseSecurity) is future work; for now log the install so the session can proceed with
         // the in-memory contract for PaymentDetails/Authorization.
-        EVLOG_info << "Ev15118: Plug&Charge contract installed for eMAID " << emaid << " ("
-                   << contract_chain_pem.size() << " bytes of chain PEM)";
+        EVLOG_info << "Ev15118: Plug&Charge contract installed for eMAID " << emaid << " (" << contract_chain_pem.size()
+                   << " bytes of chain PEM)";
     };
 
     return callbacks;

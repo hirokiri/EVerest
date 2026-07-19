@@ -277,13 +277,13 @@ SSL_CTX* init_ssl(const config::SSLConfig& ssl_config, bool verify_server_certif
     // INFO: the password callback uses a non-const argument
     if (chain != nullptr and chain->private_key_password.has_value()) {
         // Lifetime of the password is important because using a callback we'll require a valid ref
-        SSL_CTX_set_default_passwd_cb_userdata(
-            ctx, &const_cast<config::ChainConfig&>(*chain).private_key_password.value());
+        SSL_CTX_set_default_passwd_cb_userdata(ctx,
+                                               &const_cast<config::ChainConfig&>(*chain).private_key_password.value());
         SSL_CTX_set_default_passwd_cb(ctx, private_key_callback);
     }
 
-    if (have_client_key and SSL_CTX_use_PrivateKey_file(ctx, chain->path_certificate_key.c_str(), SSL_FILETYPE_PEM) !=
-                                1) {
+    if (have_client_key and
+        SSL_CTX_use_PrivateKey_file(ctx, chain->path_certificate_key.c_str(), SSL_FILETYPE_PEM) != 1) {
         log_and_raise_openssl_error("Failed in SSL_CTX_use_PrivateKey_file()");
     }
 
@@ -545,9 +545,9 @@ bool ConnectionClientSSL::drive_handshake() {
         // already have failed; this is the fail-closed backstop).
         const auto verify_result = SSL_get_verify_result(ssl_ptr);
         if (verify_result != X509_V_OK) {
-            log_and_throw((std::string("SECC certificate verification failed: ") +
-                           X509_verify_cert_error_string(verify_result))
-                              .c_str());
+            log_and_throw(
+                (std::string("SECC certificate verification failed: ") + X509_verify_cert_error_string(verify_result))
+                    .c_str());
         }
         // [V2G2-875]: the SECC leaf must identify a CPO (DomainComponent=="CPO"). Logged as a warning
         // rather than fatal to remain compatible with test PKIs that omit the RDN; elevate to fatal once

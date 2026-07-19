@@ -41,9 +41,9 @@ Result handle_response(const message_2::ServiceDiscoveryResponse& res, dt::Energ
     // service_list; the EV selects it in PaymentServiceSelection when it wants to install/update a cert.
     if (res.service_list.has_value()) {
         const auto& services = res.service_list.value();
-        result.certificate_service_offered =
-            std::any_of(services.begin(), services.end(),
-                        [](const dt::Service& s) { return s.service_id == dt::CERTIFICATE_SERVICE_ID; });
+        result.certificate_service_offered = std::any_of(services.begin(), services.end(), [](const dt::Service& s) {
+            return s.service_id == dt::CERTIFICATE_SERVICE_ID;
+        });
     }
 
     return result;

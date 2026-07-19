@@ -32,8 +32,8 @@ Result handle_response(const message_din::CableCheckResponse& res) {
     // [V2G-DC-893]: on Finished, disregard every EVSEStatusCode except EVSE_Shutdown / EVSE_Emergency-
     // Shutdown; [V2G-DC-894]: disregard EVSEIsolationStatus entirely. So only a shutdown code stops us.
     const auto status = res.dc_evse_status.evse_status_code;
-    result.evse_shutdown = (status == dt::DcEvseStatusCode::EVSE_Shutdown or
-                            status == dt::DcEvseStatusCode::EVSE_EmergencyShutdown);
+    result.evse_shutdown =
+        (status == dt::DcEvseStatusCode::EVSE_Shutdown or status == dt::DcEvseStatusCode::EVSE_EmergencyShutdown);
     return result;
 }
 

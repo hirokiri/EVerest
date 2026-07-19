@@ -863,8 +863,8 @@ std::vector<uint8_t> decrypt_contract_private_key(const std::vector<uint8_t>& en
     {
         EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(oem_key.get(), nullptr);
         size_t secret_len = 0;
-        if (ctx != nullptr and EVP_PKEY_derive_init(ctx) == 1 and
-            EVP_PKEY_derive_set_peer(ctx, peer_key.get()) == 1 and EVP_PKEY_derive(ctx, nullptr, &secret_len) == 1) {
+        if (ctx != nullptr and EVP_PKEY_derive_init(ctx) == 1 and EVP_PKEY_derive_set_peer(ctx, peer_key.get()) == 1 and
+            EVP_PKEY_derive(ctx, nullptr, &secret_len) == 1) {
             shared_secret.resize(secret_len);
             if (EVP_PKEY_derive(ctx, shared_secret.data(), &secret_len) != 1) {
                 shared_secret.clear();
@@ -971,8 +971,7 @@ message_2::RootCertificateId root_cert_id_from_der(const std::vector<uint8_t>& r
     return id;
 }
 
-std::string der_chain_to_pem(const std::vector<uint8_t>& leaf_der,
-                             const std::vector<std::vector<uint8_t>>& subs_der) {
+std::string der_chain_to_pem(const std::vector<uint8_t>& leaf_der, const std::vector<std::vector<uint8_t>>& subs_der) {
     std::string pem;
     auto append = [&pem](const std::vector<uint8_t>& der) {
         auto x = der_to_x509(der);

@@ -42,11 +42,9 @@ Result PaymentDetails::feed(Event ev) {
     // service [V2G2-432]. Relay a selected exchange (raw pass-through) via the same state, then return here
     // for the PaymentDetailsReq; a request for an unselected action is out of sequence [V2G2-539].
     const auto pending = m_ctx.peek_request_type();
-    if (pending == message_2::Type::CertificateInstallationReq or
-        pending == message_2::Type::CertificateUpdateReq) {
-        const bool selected = (pending == message_2::Type::CertificateInstallationReq)
-                                  ? m_ctx.cert_install_selected
-                                  : m_ctx.cert_update_selected;
+    if (pending == message_2::Type::CertificateInstallationReq or pending == message_2::Type::CertificateUpdateReq) {
+        const bool selected = (pending == message_2::Type::CertificateInstallationReq) ? m_ctx.cert_install_selected
+                                                                                       : m_ctx.cert_update_selected;
         if (selected) {
             return m_ctx.create_state<CertificateInstallation>();
         }

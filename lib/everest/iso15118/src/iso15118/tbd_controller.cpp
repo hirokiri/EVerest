@@ -159,9 +159,9 @@ void TbdController::tick() {
 
     if (not session and not shutdown_active.load() and not config.enable_sdp_server) {
         std::lock_guard<std::mutex> lock(session_mutex);
-        session = std::make_unique<Session>(connection_factory(poll_manager, interface_name),
-                                            session::SessionConfig(*evse_setup.handle()), callbacks, pause_ctx,
-                                            d2_pause_ctx);
+        session =
+            std::make_unique<Session>(connection_factory(poll_manager, interface_name),
+                                      session::SessionConfig(*evse_setup.handle()), callbacks, pause_ctx, d2_pause_ctx);
     }
 }
 

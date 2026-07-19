@@ -102,8 +102,7 @@ Result PreCharge::feed(Event ev) {
             m_ctx.feedback.dc_charge_loop_req(session::feedback::DcReqControlMode{mode});
         }
 
-        const auto res =
-            handle_request(*req, m_ctx.present_voltage, m_ctx.get_session_id(), m_ctx.error_status_code());
+        const auto res = handle_request(*req, m_ctx.present_voltage, m_ctx.get_session_id(), m_ctx.error_status_code());
         m_ctx.respond(res);
 
         if (res.response_code >= dt::ResponseCode::FAILED) {

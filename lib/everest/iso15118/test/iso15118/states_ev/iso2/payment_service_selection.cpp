@@ -21,8 +21,7 @@ SCENARIO("EVCC ISO-2 PaymentServiceSelection request/response handling") {
     }
 
     GIVEN("A Contract request that installs a certificate") {
-        const auto req =
-            d2::ev::state::payment_service_selection::create_request(7, dt::PaymentOption::Contract, true);
+        const auto req = d2::ev::state::payment_service_selection::create_request(7, dt::PaymentOption::Contract, true);
         THEN("Contract is selected and the Certificate service is added") {
             REQUIRE(req.selected_payment_option == dt::PaymentOption::Contract);
             REQUIRE(req.selected_service_list.size() == 2);

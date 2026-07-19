@@ -2,8 +2,8 @@
 // Copyright 2025 Pionix GmbH and Contributors to EVerest
 #include <iso15118/din/state/session_stop.hpp>
 
-#include <iso15118/detail/din/state/session_stop.hpp>
 #include <iso15118/detail/din/state/sequence_error.hpp>
+#include <iso15118/detail/din/state/session_stop.hpp>
 #include <iso15118/detail/din/state/state_helper.hpp>
 #include <iso15118/detail/helper.hpp>
 

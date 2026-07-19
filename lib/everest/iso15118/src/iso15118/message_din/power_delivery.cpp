@@ -36,8 +36,7 @@ static void convert(const struct din_ChargingProfileType& in, datatypes::Chargin
 static void convert(const datatypes::ChargingProfile& in, struct din_ChargingProfileType& out) {
     init_din_ChargingProfileType(&out);
     out.SAScheduleTupleID = in.sa_schedule_tuple_id;
-    const auto count = std::min(in.profile_entries.size(),
-                                static_cast<size_t>(din_ProfileEntryType_24_ARRAY_SIZE));
+    const auto count = std::min(in.profile_entries.size(), static_cast<size_t>(din_ProfileEntryType_24_ARRAY_SIZE));
     out.ProfileEntry.arrayLen = static_cast<uint16_t>(count);
     for (size_t i = 0; i < count; ++i) {
         out.ProfileEntry.array[i].ChargingProfileEntryStart = in.profile_entries[i].charging_profile_entry_start;

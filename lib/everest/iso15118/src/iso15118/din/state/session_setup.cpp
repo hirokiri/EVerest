@@ -8,8 +8,8 @@
 
 #include <iso15118/din/state/service_discovery.hpp>
 
-#include <iso15118/detail/din/state/session_setup.hpp>
 #include <iso15118/detail/din/state/sequence_error.hpp>
+#include <iso15118/detail/din/state/session_setup.hpp>
 #include <iso15118/detail/din/state/state_helper.hpp>
 #include <iso15118/detail/helper.hpp>
 #include <iso15118/detail/random.hpp>
