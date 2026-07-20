@@ -86,18 +86,18 @@ ReverseResult VariableResolver::cv_to_key(const ocpp::v2::Component& component,
     return result;
 }
 
-CvClass VariableResolver::classify(const ocpp::v2::Component& component, const ocpp::v2::Variable& variable) const {
+CVClass VariableResolver::classify(const ocpp::v2::Component& component, const ocpp::v2::Variable& variable) const {
     if (is_connection_config(component, variable)) {
-        return CvClass::ConnectionConfig;
+        return CVClass::ConnectionConfig;
     }
     if (is_read_only_derived(component, variable)) {
-        return CvClass::ReadOnlyDerived;
+        return CVClass::ReadOnlyDerived;
     }
     const auto reverse = cv_to_key(component, variable);
     if (reverse.key.has_value() && !reverse.ambiguous) {
-        return CvClass::KeyBacked;
+        return CVClass::KeyBacked;
     }
-    return CvClass::Free;
+    return CVClass::Free;
 }
 
 } // namespace ocpp::v16

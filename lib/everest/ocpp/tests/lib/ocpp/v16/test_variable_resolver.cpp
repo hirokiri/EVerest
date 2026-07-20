@@ -14,7 +14,7 @@
 
 namespace {
 
-using ocpp::v16::CvClass;
+using ocpp::v16::CVClass;
 using ocpp::v16::VariableResolver;
 namespace keys = ocpp::v16::keys;
 
@@ -190,43 +190,43 @@ TEST(VariableResolver, CustomMappingReverseAmbiguousCollidesWithStandard) {
 TEST(VariableResolver, ClassifyConnectionConfig) {
     const VariableResolver resolver{{}};
     EXPECT_EQ(resolver.classify(make_component("NetworkConfiguration", "1"), make_variable("OcppCsmsUrl")),
-              CvClass::ConnectionConfig);
+              CVClass::ConnectionConfig);
     EXPECT_EQ(resolver.classify(make_component("NetworkConfiguration", "7"), make_variable("SecurityProfile")),
-              CvClass::ConnectionConfig);
+              CVClass::ConnectionConfig);
     EXPECT_EQ(resolver.classify(make_component("OCPPCommCtrlr"), make_variable("NetworkConfigurationPriority")),
-              CvClass::ConnectionConfig);
+              CVClass::ConnectionConfig);
     EXPECT_EQ(resolver.classify(make_component("OCPPCommCtrlr"), make_variable("ActiveNetworkProfile")),
-              CvClass::ConnectionConfig);
-    EXPECT_EQ(resolver.classify(make_component("SecurityCtrlr"), make_variable("Identity")), CvClass::ConnectionConfig);
+              CVClass::ConnectionConfig);
+    EXPECT_EQ(resolver.classify(make_component("SecurityCtrlr"), make_variable("Identity")), CVClass::ConnectionConfig);
     EXPECT_EQ(resolver.classify(make_component("SecurityCtrlr"), make_variable("BasicAuthPassword")),
-              CvClass::ConnectionConfig);
+              CVClass::ConnectionConfig);
 }
 
 TEST(VariableResolver, ClassifyReadOnlyDerived) {
     const VariableResolver resolver{{}};
     const auto& sfp = ocpp::v2::ControllerComponentVariables::SupportedFeatureProfiles;
     ASSERT_TRUE(sfp.variable.has_value());
-    EXPECT_EQ(resolver.classify(sfp.component, sfp.variable.value()), CvClass::ReadOnlyDerived);
+    EXPECT_EQ(resolver.classify(sfp.component, sfp.variable.value()), CVClass::ReadOnlyDerived);
 
     const auto& max_limit = ocpp::v2::ControllerComponentVariables::EntriesChargingProfiles;
     ASSERT_TRUE(max_limit.variable.has_value());
-    EXPECT_EQ(resolver.classify(max_limit.component, max_limit.variable.value()), CvClass::ReadOnlyDerived);
+    EXPECT_EQ(resolver.classify(max_limit.component, max_limit.variable.value()), CVClass::ReadOnlyDerived);
 }
 
 TEST(VariableResolver, ClassifyKeyBacked) {
     const VariableResolver resolver{custom_mappings_fixture()};
     // standard key-backed CV
     EXPECT_EQ(resolver.classify(make_component("OCPPCommCtrlr"), make_variable("WebSocketPingInterval")),
-              CvClass::KeyBacked);
+              CVClass::KeyBacked);
     // custom-mapping target
-    EXPECT_EQ(resolver.classify(make_component("VendorCtrlr"), make_variable("BarSetting")), CvClass::KeyBacked);
+    EXPECT_EQ(resolver.classify(make_component("VendorCtrlr"), make_variable("BarSetting")), CVClass::KeyBacked);
 }
 
 TEST(VariableResolver, ClassifyFree) {
     const VariableResolver resolver{custom_mappings_fixture()};
-    EXPECT_EQ(resolver.classify(make_component("VendorCtrlr"), make_variable("Foo")), CvClass::Free);
+    EXPECT_EQ(resolver.classify(make_component("VendorCtrlr"), make_variable("Foo")), CVClass::Free);
     // ambiguous custom CV is not key-backed
-    EXPECT_EQ(resolver.classify(make_component("VendorCtrlr"), make_variable("FooSetting")), CvClass::Free);
+    EXPECT_EQ(resolver.classify(make_component("VendorCtrlr"), make_variable("FooSetting")), CVClass::Free);
 }
 
 } // namespace

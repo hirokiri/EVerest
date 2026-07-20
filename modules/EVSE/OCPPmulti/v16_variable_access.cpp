@@ -91,7 +91,7 @@ void V16VariableAccess::warn_deprecated_key(const std::string& key) {
 // get() and set() route each request through exactly one of four paths:
 //   path 1, legacy:     component.name empty, variable.name is a 1.6 key -> key routing, legacy result shape
 //   path 2, key-backed: CV reverse-resolves to one 1.6 key -> key routing, result echoes the canonical CV
-//   path 3, direct:     no 1.6 key -> device-model access; writes moderated by CvClass
+//   path 3, direct:     no 1.6 key -> device-model access; writes moderated by CVClass
 //   path 4, ambiguous:  CV mapped by several custom keys -> Rejected, never a silent pick
 // Checked in order 1, 4, 2, 3: ambiguity must be ruled out before a key counts as usable.
 std::vector<ocpp::v2::GetVariableResult>
@@ -241,7 +241,7 @@ std::vector<SetVariableOutcome> V16VariableAccess::set(const std::vector<ocpp::v
 
         // path 3, direct device-model write, moderated by the CV classification
         const auto cv_class = m_resolver.classify(request.component, request.variable);
-        if (cv_class == ocpp::v16::CvClass::ReadOnlyDerived) {
+        if (cv_class == ocpp::v16::CVClass::ReadOnlyDerived) {
             if (m_device_model.get_variable_meta_data(request.component, request.variable).has_value()) {
                 outcome.result.attributeStatus = ocpp::v2::SetVariableStatusEnum::Rejected;
                 outcome.result.attributeStatusInfo = read_only_derived_status_info();
@@ -278,7 +278,7 @@ std::vector<SetVariableOutcome> V16VariableAccess::set(const std::vector<ocpp::v
             const auto mutability = m_device_model.get_mutability(request.component, request.variable, attribute);
             outcome.monitor_value =
                 (mutability == ocpp::v2::MutabilityEnum::WriteOnly) ? std::string{} : request.attributeValue.get();
-            outcome.result.attributeStatus = (cv_class == ocpp::v16::CvClass::ConnectionConfig)
+            outcome.result.attributeStatus = (cv_class == ocpp::v16::CVClass::ConnectionConfig)
                                                  ? ocpp::v2::SetVariableStatusEnum::RebootRequired
                                                  : status;
         } else {

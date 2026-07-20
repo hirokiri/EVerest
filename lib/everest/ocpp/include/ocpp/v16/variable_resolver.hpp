@@ -17,7 +17,7 @@ namespace ocpp::v16 {
 
 /// \brief How a canonical Component/Variable relates to the OCPP 1.6 configuration keys;
 ///        drives request routing in v16 mode.
-enum class CvClass {
+enum class CVClass {
     /// Backed by a standard or custom-mapped 1.6 key; routed through the 1.6 stack (key
     /// validation, per-key side effects, change callbacks).
     KeyBacked,
@@ -56,7 +56,7 @@ public:
     ReverseResult cv_to_key(const ocpp::v2::Component& component, const ocpp::v2::Variable& variable) const;
 
     /// \brief Classify a CV for 1.6 key handling
-    CvClass classify(const ocpp::v2::Component& component, const ocpp::v2::Variable& variable) const;
+    CVClass classify(const ocpp::v2::Component& component, const ocpp::v2::Variable& variable) const;
 
 private:
     ocpp::v2::Ocpp16CustomConfigMappings custom_mappings;
