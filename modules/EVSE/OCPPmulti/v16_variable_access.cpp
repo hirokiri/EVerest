@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <utility>
 
+#include <fmt/core.h>
+
 #include <everest/logging.hpp>
 
 namespace {
@@ -14,16 +16,9 @@ constexpr auto READ_ONLY_DERIVED_INFO = "Managed by the OCPP1.6 stack; read-only
 constexpr auto AMBIGUOUS_MAPPING_INFO = "Ambiguous custom config mapping; fix DeviceModelConfigMappings";
 
 std::string cv_to_string(const ocpp::v2::Component& component, const ocpp::v2::Variable& variable) {
-    std::string result = component.name.get();
-    if (component.instance.has_value()) {
-        result += '(' + component.instance->get() + ')';
-    }
-    result += '/';
-    result += variable.name.get();
-    if (variable.instance.has_value()) {
-        result += '(' + variable.instance->get() + ')';
-    }
-    return result;
+    const auto instance = [](const auto& opt) { return opt.has_value() ? fmt::format("({})", opt->get()) : ""; };
+    return fmt::format("{}{}/{}{}", component.name.get(), instance(component.instance), variable.name.get(),
+                       instance(variable.instance));
 }
 
 ocpp::v2::StatusInfo ambiguous_status_info() {
