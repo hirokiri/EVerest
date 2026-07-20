@@ -52,7 +52,7 @@ private:
     virtual void init() = 0;
     virtual void ready() = 0;
     virtual void shutdown() {
-        EVLOG_warning << "No shutdown handler installed! Please implement shutdown() in your implementation!";
+        EVLOG_debug << "No shutdown handler installed! Please implement shutdown() in your implementation!";
     }
 };
 
@@ -75,8 +75,8 @@ protected:
     /// Default when a module has not yet declared its own \c shutdown() (legacy generated headers).
     /// Generated modules define a private \c shutdown() that calls \c invoke_shutdown() on each impl.
     void shutdown() {
-        EVLOG_warning << "No shutdown handler installed! Please implement shutdown() in your module! (" << info.name
-                      << ")";
+        EVLOG_debug << "No shutdown handler installed! Please implement shutdown() in your module! (" << info.name
+                    << ")";
     }
 };
 
