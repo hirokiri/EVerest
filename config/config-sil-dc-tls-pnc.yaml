@@ -27,6 +27,10 @@ active_modules:
       # the installed etc/everest/certs defaults (client/mo, client/oem). A pre-installed MO contract cert
       # is present, so the EV runs PaymentDetails + signed Authorization (no CertificateInstallation).
       enable_pnc: true
+    connections:
+      ev_board_support:
+        - module_id: yeti_driver
+          implementation_id: ev_board_support
   evse_manager:
     module: EvseManager
     config_module:

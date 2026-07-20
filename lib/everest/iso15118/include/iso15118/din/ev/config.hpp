@@ -44,6 +44,10 @@ struct EvSessionConfig {
     // When set, the SessionSetupReq carries this id and an OK_OldSessionJoined response is accepted
     // (pause/resume re-join).
     std::optional<dt::SessionId> resumed_session_id{std::nullopt};
+
+    // See session::EvSetupConfig::has_cp_state_feedback: hold the first CableCheckReq until the module
+    // reports CP state C/D.
+    bool has_cp_state_feedback{false};
 };
 
 } // namespace iso15118::din::ev

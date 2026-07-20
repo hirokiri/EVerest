@@ -87,6 +87,10 @@ struct EvSessionConfig {
 
     // Plug-and-Charge configuration (disabled by default -> EIM).
     PnCConfig pnc{};
+
+    // See session::EvSetupConfig::has_cp_state_feedback: hold the first CableCheckReq until the module
+    // reports CP state C/D.
+    bool has_cp_state_feedback{false};
 };
 
 } // namespace iso15118::d2::ev

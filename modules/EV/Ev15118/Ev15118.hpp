@@ -13,6 +13,9 @@
 // headers for provided interface implementations
 #include <generated/interfaces/ISO15118_ev/Implementation.hpp>
 
+// headers for required interface implementations
+#include <generated/interfaces/ev_board_support/Interface.hpp>
+
 // ev@4bf81b14-a215-475c-a1d3-0a484ae48918:v1
 // insert your custom include headers here
 // ev@4bf81b14-a215-475c-a1d3-0a484ae48918:v1
@@ -50,10 +53,12 @@ struct Conf {
 class Ev15118 : public Everest::ModuleBase {
 public:
     Ev15118() = delete;
-    Ev15118(const ModuleInfo& info, std::unique_ptr<ISO15118_evImplBase> p_ev, Conf& config) :
-        ModuleBase(info), p_ev(std::move(p_ev)), config(config){};
+    Ev15118(const ModuleInfo& info, std::unique_ptr<ISO15118_evImplBase> p_ev,
+            std::vector<std::unique_ptr<ev_board_supportIntf>> r_ev_board_support, Conf& config) :
+        ModuleBase(info), p_ev(std::move(p_ev)), r_ev_board_support(std::move(r_ev_board_support)), config(config){};
 
     const std::unique_ptr<ISO15118_evImplBase> p_ev;
+    const std::vector<std::unique_ptr<ev_board_supportIntf>> r_ev_board_support;
     const Conf& config;
 
     // ev@1fce4c5e-0ab8-41bb-90f7-14277703d2ac:v1

@@ -8,6 +8,7 @@
 namespace iso15118::din::ev {
 
 using d20::ev::ControlEvent;
+using d20::ev::CpState;
 using d20::ev::PauseCharging;
 using d20::ev::PresentVoltageCurrent;
 using d20::ev::StopCharging;

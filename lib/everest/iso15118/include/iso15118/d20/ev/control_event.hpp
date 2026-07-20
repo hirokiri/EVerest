@@ -37,8 +37,14 @@ struct UpdateDcParameters {
     std::optional<float> max_charge_current;
 };
 
-using ControlEvent =
-    std::variant<StopCharging, PauseCharging, PresentVoltageCurrent, UpdateDcTargets, UpdateSoc, UpdateDcParameters>;
+// Reported control pilot state (IEC 61851-1): true while the EV applies state C or D (S2 closed).
+// The DC cable check states use this to hold the first CableCheckReq until the EV is in state C/D.
+struct CpState {
+    bool c_or_d{false};
+};
+
+using ControlEvent = std::variant<StopCharging, PauseCharging, PresentVoltageCurrent, UpdateDcTargets, UpdateSoc,
+                                  UpdateDcParameters, CpState>;
 
 class ControlEventQueue {
 public:

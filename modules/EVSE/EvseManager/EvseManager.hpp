@@ -392,6 +392,7 @@ private:
     bool wait_powersupply_DC_below_voltage(double target_voltage);
 
     bool cable_check_should_exit();
+    bool cable_check_wait_for_prepare_charging();
 
     double get_emergency_over_voltage_threshold();
     double get_error_over_voltage_threshold();

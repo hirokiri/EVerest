@@ -128,6 +128,11 @@ public:
     bool session_stopped{false};
     bool session_paused{false};
 
+    // Last control pilot state reported by the module (CpState control event, kept by the engine so it
+    // persists across states): true while the EV applies state C or D. Only meaningful when
+    // session_config.has_cp_state_feedback is set.
+    bool cp_state_c_or_d{false};
+
     // Set when a stop/pause control event is received during the handshake. Checked at transition time
     // so the state machine can divert to the SessionStop state after the current exchange completes.
     std::optional<message_20::datatypes::ChargingSession> pending_stop{std::nullopt};

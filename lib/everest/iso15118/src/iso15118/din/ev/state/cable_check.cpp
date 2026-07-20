@@ -47,8 +47,24 @@ void CableCheck::enter() {
 
 void CableCheck::send(Event) {
     if (first_request) {
+        // The ongoing timer also bounds the wait for CP state C/D below: if the state never comes the
+        // session terminates via the regular cable check ongoing timeout.
         m_ctx.start_timeout(d20::TimeoutType::ONGOING, TIMEOUT_CABLE_CHECK_MS);
         first_request = false;
+
+        // [V2G-DC-547]: the EV shall apply CP state C or D before requesting the cable check. When the
+        // module reports the applied CP state, hold the first CableCheckReq until state C/D is seen.
+        if (m_ctx.session_config.has_cp_state_feedback and not m_ctx.cp_state_c_or_d) {
+            m_ctx.log("CableCheck: waiting for CP state C/D before sending the first CableCheckReq");
+            waiting_for_cp_state = true;
+        }
+    }
+
+    if (waiting_for_cp_state) {
+        if (not m_ctx.cp_state_c_or_d) {
+            return;
+        }
+        waiting_for_cp_state = false;
     }
 
     auto req = create_request(make_dc_ev_status(m_ctx, true));
@@ -66,6 +82,9 @@ din::ev::Result CableCheck::feed(Event ev) {
     if (ev == Event::CONTROL_MESSAGE) {
         handle_dc_control_event(m_ctx);
         handle_stop_control_event(m_ctx);
+        if (waiting_for_cp_state and m_ctx.cp_state_c_or_d) {
+            send(ev);
+        }
         return {};
     }
 

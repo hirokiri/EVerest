@@ -395,6 +395,7 @@ std::unique_ptr<EvEngine> EvSession::create_engine(ProtocolId protocol_id) {
         d2_config.resumed_session_id = config.resumed_session_id;
         // Plug-and-Charge (Contract) material, populated by the module from EvseSecurity when enabled.
         d2_config.pnc = config.iso2_pnc;
+        d2_config.has_cp_state_feedback = config.has_cp_state_feedback;
 
         const io::StreamOutputView view{request_buffer + io::SdpPacket::V2GTP_HEADER_SIZE,
                                         sizeof(request_buffer) - io::SdpPacket::V2GTP_HEADER_SIZE};
@@ -428,6 +429,7 @@ std::unique_ptr<EvEngine> EvSession::create_engine(ProtocolId protocol_id) {
         din_config.dc.target_voltage = dt::from_RationalNumber(dc.target_voltage);
         din_config.dc.target_current = dt::from_RationalNumber(dc.target_current);
         din_config.dc.energy_capacity = dt::from_RationalNumber(dc.energy_capacity);
+        din_config.has_cp_state_feedback = config.has_cp_state_feedback;
 
         const io::StreamOutputView view{request_buffer + io::SdpPacket::V2GTP_HEADER_SIZE,
                                         sizeof(request_buffer) - io::SdpPacket::V2GTP_HEADER_SIZE};

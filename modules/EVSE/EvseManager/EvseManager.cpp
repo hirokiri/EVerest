@@ -1976,6 +1976,33 @@ bool EvseManager::cable_check_should_exit() {
     return charger->get_current_state() not_eq Charger::EvseState::PrepareCharging;
 }
 
+bool EvseManager::cable_check_wait_for_prepare_charging() {
+    // A fast EV can request CableCheck while the charger state machine is still in
+    // WaitingForAuthentication: with no energy available that state holds for up to
+    // WAIT_FOR_ENERGY_IN_AUTHLOOP_TIMEOUT_MS before it proceeds to PrepareCharging on its own. Wait for
+    // it to arrive instead of failing the cable check right away; the SECC keeps answering
+    // CableCheckRes with EVSEProcessing=Ongoing meanwhile. Any state other than
+    // WaitingForAuthentication/PrepareCharging means the session is stopping, so give up.
+    Timeout timeout;
+    timeout.start(10s);
+    bool waiting_logged = false;
+    while (not timeout.reached()) {
+        const auto state = charger->get_current_state();
+        if (state == Charger::EvseState::PrepareCharging) {
+            return true;
+        }
+        if (state not_eq Charger::EvseState::WaitingForAuthentication) {
+            return false;
+        }
+        if (not waiting_logged) {
+            waiting_logged = true;
+            session_log.evse(false, "CableCheck: waiting for charger to enter PrepareCharging...");
+        }
+        std::this_thread::sleep_for(100ms);
+    }
+    return false;
+}
+
 bool EvseManager::check_voltage_to_protective_earth_in_range(types::isolation_monitor::IsolationMeasurement m) {
     static constexpr double MAX_VOLTAGE_STATIC = 550.0; // defined by IEC 61851-23:2023, $6.3.1.112.2
     if (m.voltage_V.has_value() and m.voltage_to_earth_l1e_V.has_value() and m.voltage_to_earth_l2e_V.has_value()) {
@@ -2032,6 +2059,11 @@ void EvseManager::cable_check() {
         session_log.evse(true, "Start cable check...");
         charger->get_stopwatch().report_phase();
         charger->get_stopwatch().mark_phase("CableCheck");
+
+        if (not cable_check_wait_for_prepare_charging()) {
+            fail_cable_check("CableCheck: Charger did not enter PrepareCharging state.");
+            return;
+        }
 
         // Verify output is below 60V initially
         if (not wait_powersupply_DC_below_voltage(CABLECHECK_SAFE_VOLTAGE)) {

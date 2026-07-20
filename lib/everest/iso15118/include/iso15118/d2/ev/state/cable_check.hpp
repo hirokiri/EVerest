@@ -18,6 +18,9 @@ struct CableCheck : public StateBase {
 private:
     bool first_request{true};
     bool ongoing_timeout_reached{false};
+    // Set while the first CableCheckReq is held back until the module reports CP state C/D (only with
+    // session_config.has_cp_state_feedback). Cleared when the request is finally sent.
+    bool waiting_for_cp_state{false};
 
     void send(Event ev);
 };

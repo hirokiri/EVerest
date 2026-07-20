@@ -151,6 +151,14 @@ provides:
   ev:
     interface: ISO15118_ev
     description: This module implements the ISO15118 (DIN 70121 / -2 / -20) implementation of an EV
+# The optional ev_board_support connection feeds back the applied control pilot state (bsp_event).
+# When connected, the DC cable check waits for CP state C/D before sending the first CableCheckReq,
+# as required by ISO 15118-2 / -20 and DIN SPEC 70121.
+requires:
+  ev_board_support:
+    interface: ev_board_support
+    min_connections: 0
+    max_connections: 1
 metadata:
   license: https://opensource.org/licenses/Apache-2.0
   authors:

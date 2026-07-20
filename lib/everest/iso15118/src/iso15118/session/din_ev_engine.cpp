@@ -39,6 +39,11 @@ void DinEvEngine::on_packet(io::v2gtp::PayloadType, const io::StreamInputView& v
 }
 
 void DinEvEngine::on_control_event(const d20::ev::ControlEvent& event) {
+    // The CP state is kept in the context so it persists across states (only the DC cable check reads
+    // it, but the report may arrive while an earlier state is active).
+    if (const auto* cp_state = std::get_if<d20::ev::CpState>(&event)) {
+        ctx.cp_state_c_or_d = cp_state->c_or_d;
+    }
     active_control_event = event;
     [[maybe_unused]] const auto res = fsm.feed(din::ev::Event::CONTROL_MESSAGE);
     active_control_event.reset();

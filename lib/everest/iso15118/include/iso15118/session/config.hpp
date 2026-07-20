@@ -69,6 +69,10 @@ struct EvSetupConfig {
     // ISO 15118-2 Plug-and-Charge (Contract) configuration. Passed through to the d2 EV engine; the
     // module fills it from EvseSecurity when PnC is enabled.
     d2::ev::PnCConfig iso2_pnc{};
+
+    // Set when the module reports the applied control pilot state (CpState control events). The DC cable
+    // check states then hold the first CableCheckReq until CP state C/D is reported.
+    bool has_cp_state_feedback{false};
 };
 
 // Session-scoped EV configuration. Constructed from EvSetupConfig at the start of a session.
@@ -99,6 +103,9 @@ struct EvSessionConfig {
 
     // ISO 15118-2 Plug-and-Charge (Contract) configuration (see EvSetupConfig::iso2_pnc).
     d2::ev::PnCConfig iso2_pnc{};
+
+    // See EvSetupConfig::has_cp_state_feedback.
+    bool has_cp_state_feedback{false};
 };
 
 // Protocol-neutral, universal SECC configuration. The per-service parameter list, DC/AC/DER limit and

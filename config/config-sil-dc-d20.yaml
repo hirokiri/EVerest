@@ -15,6 +15,10 @@ active_modules:
       tls_active: true
       enable_tls_1_3: true
       logging_path: /tmp/everest-logs
+    connections:
+      ev_board_support:
+        - module_id: yeti_driver
+          implementation_id: ev_board_support
   evse_manager:
     module: EvseManager
     config_module:

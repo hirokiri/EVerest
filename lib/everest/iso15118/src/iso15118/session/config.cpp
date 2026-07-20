@@ -27,7 +27,8 @@ EvSessionConfig::EvSessionConfig(EvSetupConfig config) :
     dc_charge_parameters(std::move(config.dc_charge_parameters)),
     dc_bpt_charge_parameters(std::move(config.dc_bpt_charge_parameters)),
     ac_charge_parameters(std::move(config.ac_charge_parameters)),
-    iso2_pnc(std::move(config.iso2_pnc)) {
+    iso2_pnc(std::move(config.iso2_pnc)),
+    has_cp_state_feedback(config.has_cp_state_feedback) {
 
     if (supported_auth_options.empty()) {
         supported_auth_options = {dt::Authorization::EIM};

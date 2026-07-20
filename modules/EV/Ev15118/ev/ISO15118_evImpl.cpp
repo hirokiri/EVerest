@@ -383,6 +383,33 @@ void ISO15118_evImpl::init() {
         EVLOG_warning << "Ev15118: enforce_tls is set but tls_active is false; forcing a TLS connection "
                          "(enforce_tls takes precedence)";
     }
+
+    // Optional CP state feedback: forward the applied control pilot state into the session so the DC
+    // cable check can hold the first CableCheckReq until the EV is in state C/D (see manifest).
+    if (not mod->r_ev_board_support.empty()) {
+        mod->r_ev_board_support[0]->subscribe_bsp_event([this](const types::board_support_common::BspEvent& event) {
+            using Event = types::board_support_common::Event;
+            bool c_or_d{false};
+            switch (event.event) {
+            case Event::C:
+            case Event::D:
+                c_or_d = true;
+                break;
+            case Event::A:
+            case Event::B:
+            case Event::E:
+            case Event::F:
+                c_or_d = false;
+                break;
+            default:
+                return; // PowerOn/PowerOff/Disconnected do not change the CP state
+            }
+            std::scoped_lock lock(config_mutex);
+            if (controller) {
+                controller->send_control_event(iso15118::d20::ev::CpState{c_or_d});
+            }
+        });
+    }
 }
 
 iso15118::d20::ev::DcEvChargeParameters ISO15118_evImpl::build_dc_charge_parameters() const {
@@ -577,6 +604,8 @@ void ISO15118_evImpl::ready() {
         }
         setup_config.dc_charge_parameters = build_dc_charge_parameters();
         setup_config.dc_bpt_charge_parameters = build_bpt_dc_charge_parameters();
+        // With CP feedback wired (see init()), the DC cable check waits for CP state C/D.
+        setup_config.has_cp_state_feedback = not mod->r_ev_board_support.empty();
 
         setup_config.ac_charge_parameters.max_charge_power = dt::from_float(AC_MAX_CHARGE_POWER_W);
         setup_config.ac_charge_parameters.min_charge_power = dt::from_float(AC_MIN_CHARGE_POWER_W);

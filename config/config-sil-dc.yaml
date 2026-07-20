@@ -15,6 +15,10 @@ active_modules:
       device: auto
       supported_DIN70121: true
       supported_ISO15118_2: true
+    connections:
+      ev_board_support:
+        - module_id: yeti_driver
+          implementation_id: ev_board_support
   evse_manager:
     module: EvseManager
     config_module:
