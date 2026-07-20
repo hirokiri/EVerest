@@ -494,7 +494,8 @@ TEST_F(GenericOcppProvidesTester, setVariablesSynthesizesMonitorEventRebootRequi
 }
 
 TEST_F(GenericOcppProvidesTester, setVariablesSynthesizedEventEchoesLegacyForm) {
-    // synthesis fans out to the registered form: a legacy key-only monitor gets a legacy-shaped echo
+    // Test if event is echoed for the legacy form if a monitor was registered with the legacy form
+    // and was changed using the canonical form
     using module::conversions::to_ocpp_set_variable_data_vector;
     using ocpp::v2::Component;
     using ocpp::v2::Variable;
