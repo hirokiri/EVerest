@@ -711,18 +711,21 @@ iso15118::session::feedback::Callbacks ISO15118_chargerImpl::create_callbacks() 
             publish_ac_open_contactor(nullptr);
             break;
         case Signal::DLINK_TERMINATE:
+            report_hlc_session_failed();
             publish_dlink_terminate(nullptr);
             break;
         case Signal::DLINK_PAUSE:
             publish_dlink_pause(nullptr);
             break;
         case Signal::DLINK_ERROR:
+            report_hlc_session_failed();
             publish_dlink_error(nullptr);
             break;
         }
     };
 
     callbacks.v2g_message = [this](const iso15118::V2gMessageType& id) {
+        last_v2g_message = id;
         const auto v2g_message_id = convert_v2g_message_type(id);
         publish_v2g_messages({v2g_message_id});
     };
@@ -919,6 +922,26 @@ iso15118::session::feedback::Callbacks ISO15118_chargerImpl::create_callbacks() 
     return callbacks;
 }
 
+void ISO15118_chargerImpl::report_hlc_session_failed() {
+    // Runs on the session loop thread from the DLINK_TERMINATE / DLINK_ERROR feedback. Derive a
+    // protocol-agnostic failure reason from the last V2G message the session handled and publish it,
+    // unless the EVSE simply stopped the session gracefully (and it was not an emergency shutdown).
+    // Clears the per-session state so the next session starts fresh.
+    std::optional<types::evse_manager::HlcSessionFailedReasonEnum> reason;
+    if (last_v2g_message.has_value()) {
+        reason = map_v2g_message_to_hlc_failed_reason(*last_v2g_message);
+    }
+
+    const bool suppressed = graceful_stop_requested.load() and not emergency_shutdown_requested.load();
+    if (reason.has_value() and not suppressed) {
+        publish_hlc_session_failed(*reason);
+    }
+
+    last_v2g_message.reset();
+    graceful_stop_requested = false;
+    emergency_shutdown_requested = false;
+}
+
 void ISO15118_chargerImpl::handle_setup(types::iso15118::EVSEID& evse_id,
                                         [[maybe_unused]] types::iso15118::SaeJ2847BidiMode& sae_j2847_mode,
                                         [[maybe_unused]] bool& debug_mode) {
@@ -1096,6 +1119,12 @@ void ISO15118_chargerImpl::handle_receipt_is_required(bool& receipt_required) {
 }
 
 void ISO15118_chargerImpl::handle_stop_charging(bool& stop) {
+
+    if (stop) {
+        // A graceful EVSE-initiated stop is not a session failure: suppress the hlc_session_failed
+        // report at teardown (unless an emergency shutdown also fired).
+        graceful_stop_requested = true;
+    }
 
     std::scoped_lock lock(GEL);
     if (controller) {
@@ -1445,6 +1474,9 @@ void ISO15118_chargerImpl::handle_send_error(types::iso15118::EvseError& error) 
         break;
     case types::iso15118::EvseError::Error_EmergencyShutdown:
         code = iso15118::d20::EvseErrorCode::EmergencyShutdown;
+        // The EVSE aborts the session; report hlc_session_failed at teardown even if a graceful stop
+        // was also requested. This is how a failed cable check (isolation fault) surfaces a reason.
+        emergency_shutdown_requested = true;
         break;
     }
 

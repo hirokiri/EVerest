@@ -13,8 +13,12 @@
 #include "../Evse15118D20.hpp"
 
 // ev@75ac1216-19eb-4182-a85c-820f1fc2c091:v1
+#include <atomic>
 #include <bitset>
 #include <mutex>
+#include <optional>
+
+#include <iso15118/message/v2g_message_type.hpp>
 
 #include "der_relay.hpp"
 #include "grid_event.hpp"
@@ -117,6 +121,16 @@ private:
     // concurrent applies and leave a mixed DER-function map. Outermost lock; acquired before GEL.
     std::mutex der_apply_mutex;
     void apply_active_der_directives();
+
+    // hlc_session_failed derivation. The last V2G message handled this session (loop thread only, from
+    // the v2g_message feedback) is mapped to a reason at teardown, mirroring EvseV2G. graceful_stop and
+    // emergency_shutdown are set from the module command threads (handle_stop_charging / handle_send_error)
+    // so they are atomic. A graceful EVSE stop suppresses the report; an emergency shutdown never does
+    // (that is how a failed cable check is surfaced, since it aborts the session from the EVSE side).
+    std::optional<iso15118::V2gMessageType> last_v2g_message;
+    std::atomic_bool graceful_stop_requested{false};
+    std::atomic_bool emergency_shutdown_requested{false};
+    void report_hlc_session_failed();
     // ev@3370e4dd-95f4-47a9-aaec-ea76f34a66c9:v1
 };
 

@@ -6,6 +6,7 @@
 #include <optional>
 #include <vector>
 
+#include <generated/types/evse_manager.hpp>
 #include <generated/types/iso15118.hpp>
 #include <generated/types/iso15118_vas.hpp>
 
@@ -280,6 +281,162 @@ constexpr types::iso15118::V2gMessageId convert_v2g_message_type(iso15118::messa
 // Dispatcher over the protocol-neutral V2gMessageType variant reported by the feedback callbacks.
 inline types::iso15118::V2gMessageId convert_v2g_message_type(const iso15118::V2gMessageType& type) {
     return std::visit([](auto&& concrete) { return convert_v2g_message_type(concrete); }, type);
+}
+
+// Maps the last V2G message handled before a session tore down to a protocol-agnostic
+// HlcSessionFailedReasonEnum, keyed on the phase that message belongs to (mirrors EvseV2G's
+// map_v2g_msg_to_hlc_failed_reason). Returns std::nullopt for messages that represent a clean end
+// (SessionStop, WeldingDetection) or no session activity (None): no failure is reported for those.
+constexpr std::optional<types::evse_manager::HlcSessionFailedReasonEnum>
+map_v2g_message_to_hlc_failed_reason(iso15118::message_20::Type type) {
+    using Type = iso15118::message_20::Type;
+    using Reason = types::evse_manager::HlcSessionFailedReasonEnum;
+    switch (type) {
+    case Type::SupportedAppProtocolReq:
+    case Type::SupportedAppProtocolRes:
+    case Type::SessionSetupReq:
+    case Type::SessionSetupRes:
+        return Reason::ProtocolNegotiationFailed;
+    case Type::AuthorizationSetupReq:
+    case Type::AuthorizationSetupRes:
+    case Type::AuthorizationReq:
+    case Type::AuthorizationRes:
+        return Reason::AuthorizationFailed;
+    case Type::ServiceDiscoveryReq:
+    case Type::ServiceDiscoveryRes:
+    case Type::ServiceDetailReq:
+    case Type::ServiceDetailRes:
+    case Type::ServiceSelectionReq:
+    case Type::ServiceSelectionRes:
+    case Type::DC_ChargeParameterDiscoveryReq:
+    case Type::DC_ChargeParameterDiscoveryRes:
+    case Type::AC_ChargeParameterDiscoveryReq:
+    case Type::AC_ChargeParameterDiscoveryRes:
+    case Type::DER_AC_ChargeParameterDiscoveryReq:
+    case Type::DER_AC_ChargeParameterDiscoveryRes:
+    case Type::DER_SAE_AC_ChargeParameterDiscoveryReq:
+    case Type::DER_SAE_AC_ChargeParameterDiscoveryRes:
+    case Type::ScheduleExchangeReq:
+    case Type::ScheduleExchangeRes:
+        return Reason::ChargingParametersNotAccepted;
+    case Type::DC_CableCheckReq:
+    case Type::DC_CableCheckRes:
+    case Type::DC_PreChargeReq:
+    case Type::DC_PreChargeRes:
+    case Type::PowerDeliveryReq:
+    case Type::PowerDeliveryRes:
+        return Reason::EnergyTransferSetupFailed;
+    case Type::DC_ChargeLoopReq:
+    case Type::DC_ChargeLoopRes:
+    case Type::AC_ChargeLoopReq:
+    case Type::AC_ChargeLoopRes:
+    case Type::DER_AC_ChargeLoopReq:
+    case Type::DER_AC_ChargeLoopRes:
+    case Type::DER_SAE_AC_ChargeLoopReq:
+    case Type::DER_SAE_AC_ChargeLoopRes:
+        return Reason::ChargingInterrupted;
+    case Type::DC_WeldingDetectionReq:
+    case Type::DC_WeldingDetectionRes:
+    case Type::SessionStopReq:
+    case Type::SessionStopRes:
+    case Type::None:
+        return std::nullopt;
+    }
+    return Reason::UnexpectedSessionEnd;
+}
+
+constexpr std::optional<types::evse_manager::HlcSessionFailedReasonEnum>
+map_v2g_message_to_hlc_failed_reason(iso15118::message_2::Type type) {
+    using Type = iso15118::message_2::Type;
+    using Reason = types::evse_manager::HlcSessionFailedReasonEnum;
+    switch (type) {
+    case Type::SessionSetupReq:
+    case Type::SessionSetupRes:
+        return Reason::ProtocolNegotiationFailed;
+    case Type::ServiceDiscoveryReq:
+    case Type::ServiceDiscoveryRes:
+    case Type::ServiceDetailReq:
+    case Type::ServiceDetailRes:
+    case Type::ChargeParameterDiscoveryReq:
+    case Type::ChargeParameterDiscoveryRes:
+        return Reason::ChargingParametersNotAccepted;
+    case Type::PaymentServiceSelectionReq:
+    case Type::PaymentServiceSelectionRes:
+    case Type::PaymentDetailsReq:
+    case Type::PaymentDetailsRes:
+    case Type::AuthorizationReq:
+    case Type::AuthorizationRes:
+    case Type::CertificateInstallationReq:
+    case Type::CertificateInstallationRes:
+    case Type::CertificateUpdateReq:
+    case Type::CertificateUpdateRes:
+        return Reason::AuthorizationFailed;
+    case Type::CableCheckReq:
+    case Type::CableCheckRes:
+    case Type::PreChargeReq:
+    case Type::PreChargeRes:
+    case Type::PowerDeliveryReq:
+    case Type::PowerDeliveryRes:
+        return Reason::EnergyTransferSetupFailed;
+    case Type::CurrentDemandReq:
+    case Type::CurrentDemandRes:
+    case Type::ChargingStatusReq:
+    case Type::ChargingStatusRes:
+    case Type::MeteringReceiptReq:
+    case Type::MeteringReceiptRes:
+        return Reason::ChargingInterrupted;
+    case Type::WeldingDetectionReq:
+    case Type::WeldingDetectionRes:
+    case Type::SessionStopReq:
+    case Type::SessionStopRes:
+    case Type::None:
+        return std::nullopt;
+    }
+    return Reason::UnexpectedSessionEnd;
+}
+
+constexpr std::optional<types::evse_manager::HlcSessionFailedReasonEnum>
+map_v2g_message_to_hlc_failed_reason(iso15118::message_din::Type type) {
+    using Type = iso15118::message_din::Type;
+    using Reason = types::evse_manager::HlcSessionFailedReasonEnum;
+    switch (type) {
+    case Type::SessionSetupReq:
+    case Type::SessionSetupRes:
+        return Reason::ProtocolNegotiationFailed;
+    case Type::ServiceDiscoveryReq:
+    case Type::ServiceDiscoveryRes:
+    case Type::ChargeParameterDiscoveryReq:
+    case Type::ChargeParameterDiscoveryRes:
+        return Reason::ChargingParametersNotAccepted;
+    case Type::ServicePaymentSelectionReq:
+    case Type::ServicePaymentSelectionRes:
+    case Type::ContractAuthenticationReq:
+    case Type::ContractAuthenticationRes:
+        return Reason::AuthorizationFailed;
+    case Type::CableCheckReq:
+    case Type::CableCheckRes:
+    case Type::PreChargeReq:
+    case Type::PreChargeRes:
+    case Type::PowerDeliveryReq:
+    case Type::PowerDeliveryRes:
+        return Reason::EnergyTransferSetupFailed;
+    case Type::CurrentDemandReq:
+    case Type::CurrentDemandRes:
+        return Reason::ChargingInterrupted;
+    case Type::WeldingDetectionReq:
+    case Type::WeldingDetectionRes:
+    case Type::SessionStopReq:
+    case Type::SessionStopRes:
+    case Type::None:
+        return std::nullopt;
+    }
+    return Reason::UnexpectedSessionEnd;
+}
+
+// Dispatcher over the protocol-neutral V2gMessageType variant.
+inline std::optional<types::evse_manager::HlcSessionFailedReasonEnum>
+map_v2g_message_to_hlc_failed_reason(const iso15118::V2gMessageType& type) {
+    return std::visit([](auto&& concrete) { return map_v2g_message_to_hlc_failed_reason(concrete); }, type);
 }
 
 std::optional<float> convert_from_optional(const std::optional<dt::RationalNumber>& in);
