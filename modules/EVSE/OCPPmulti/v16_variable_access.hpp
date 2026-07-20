@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Pionix GmbH and Contributors to EVerest
 
-#ifndef OCPP_MULTI_V16_VARIABLE_ACCESS_HPP
-#define OCPP_MULTI_V16_VARIABLE_ACCESS_HPP
+#pragma once
 
 #include <functional>
 #include <set>
@@ -50,5 +49,3 @@ private:
 };
 
 } // namespace ocpp_multi
-
-#endif // OCPP_MULTI_V16_VARIABLE_ACCESS_HPP
