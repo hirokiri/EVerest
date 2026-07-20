@@ -1785,9 +1785,10 @@ GenericOcpp::DerApplyResult GenericOcpp::apply_der_capability(std::int32_t evse_
         }
     }
 
-    const auto collect_rejected = [](const std::vector<ocpp::v2::SetVariableResult>& set_results) {
+    const auto collect_rejected = [](const std::vector<SetVariableOutcome>& outcomes) {
         std::string rejected_details;
-        for (const auto& set_result : set_results) {
+        for (const auto& outcome : outcomes) {
+            const auto& set_result = outcome.result;
             if (set_result.attributeStatus != ocpp::v2::SetVariableStatusEnum::Accepted) {
                 if (not rejected_details.empty()) {
                     rejected_details += ", ";
