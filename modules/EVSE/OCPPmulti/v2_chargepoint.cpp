@@ -22,13 +22,17 @@ constexpr const auto SETPOINT_PRIORITY_VAR_NAME = "SetpointPriority";
 constexpr const auto TX_START_POINT_VAR_NAME = "TxStartPoint";
 constexpr const auto TX_STOP_POINT_VAR_NAME = "TxStopPoint";
 
+void warn_key_only(std::string_view fn) {
+    EVLOG_warning << fn
+                  << ": key-only addressing is an OCPP 1.6 legacy form, not supported with OCPP 2.x - use "
+                     "canonical ComponentVariable addressing (see the OCPPmulti documentation)";
+}
+
 // key-only addressing (empty component) is an OCPP 1.6 legacy form; warn once per call
 template <typename T> void warn_if_key_only(const std::vector<T>& requests, std::string_view fn) {
     if (std::any_of(requests.begin(), requests.end(),
                     [](const T& request) { return request.component.name.get().empty(); })) {
-        EVLOG_warning << fn
-                      << ": key-only addressing is an OCPP 1.6 legacy form, not supported with OCPP 2.x - use "
-                         "canonical ComponentVariable addressing (see the OCPPmulti documentation)";
+        warn_key_only(fn);
     }
 }
 
@@ -981,8 +985,7 @@ void ChargePointV2::register_variable_listener(const ocpp::v2::Component& compon
 std::optional<ocpp::v2::ComponentVariable> ChargePointV2::resolve_to_canonical(const ocpp::v2::Component& component,
                                                                                const ocpp::v2::Variable& variable) {
     if (component.name.get().empty()) {
-        EVLOG_warning << "resolve_to_canonical: key-only addressing is an OCPP 1.6 legacy form, not supported with "
-                         "OCPP 2.x - use canonical ComponentVariable addressing (see the OCPPmulti documentation)";
+        warn_key_only("resolve_to_canonical");
         return std::nullopt;
     }
     return ocpp::v2::ComponentVariable{component, variable};
