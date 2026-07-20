@@ -505,8 +505,8 @@ OCPP configuration can be read, written and monitored through three channels:
   ``ocpp_consumer_API``; see its own documentation for transport and message
   details.
 
-On the two EVerest-side channels, addressing and semantics are identical, and
-identical regardless of whether OCPP 1.6 or 2.x is active. The CSMS channel
+On the two EVerest-side channels, addressing and semantics are identical,
+regardless of whether OCPP 1.6 or 2.x is active. The CSMS channel
 uses whatever the active protocol version prescribes (configuration keys in
 1.6, component/variable in 2.x); the rest of this section covers the
 EVerest-side channels.
@@ -583,7 +583,7 @@ so the workflow below is identical for OCPP 1.6 and 2.x.
      - ``OCPPCommCtrlr``
      - ``ActiveNetworkProfile`` (ReadOnly)
 
-Workflow — prepare a profile (here: slot 2), then activate it:
+Workflow — prepare a profile (here: slot 2):
 
 .. code-block:: json
 
@@ -647,6 +647,6 @@ Existing 1.6 integrations keep working in v16 mode: empty component name,
 
 The first use of each key logs a deprecation warning naming the canonical
 address. This form is not accepted when OCPP 2.x is active (returns
-``UnknownComponent``) and will be removed per the deprecation policy — migrate
+``UnknownComponent``) and will be removed per the deprecation policy, it is strongly recommended to migrate
 to canonical addressing. Requests with a non-empty component name are never
 reinterpreted as configuration keys.
