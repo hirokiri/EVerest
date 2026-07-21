@@ -411,6 +411,17 @@ void ISO15118_chargerImpl::init() {
         }
     });
 
+    mod->r_iso2->subscribe_session_stop_res_sent([this](const auto action) {
+        if (not mod->selected_iso20()) {
+            publish_session_stop_res_sent(action);
+        }
+    });
+    mod->r_iso20->subscribe_session_stop_res_sent([this](const auto action) {
+        if (mod->selected_iso20()) {
+            publish_session_stop_res_sent(action);
+        }
+    });
+
     mod->r_iso2->subscribe_dlink_error([this]() {
         if (not mod->selected_iso20()) {
             publish_dlink_error(nullptr);

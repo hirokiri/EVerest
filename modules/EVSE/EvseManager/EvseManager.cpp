@@ -391,6 +391,14 @@ void EvseManager::ready() {
             r_slac[0]->call_dlink_terminate();
         });
 
+        r_hlc[0]->subscribe_session_stop_res_sent([this](types::iso15118::SessionStopAction action) {
+            session_log.evse(true, "SessionStopRes sent, arming CP oscillator retain timer [V2G-DC-968]");
+            charger->notify_session_stop_res_sent(action);
+            // Deliberately no r_slac call here: only the oscillator timing hangs off this event. The
+            // PLC link must stay MATCHED so the EV's TCP close can still complete; link teardown
+            // remains anchored to the dlink_* events after the connection is closed.
+        });
+
         r_hlc[0]->subscribe_v2g_setup_finished([this] { charger->set_hlc_charging_active(); });
 
         r_hlc[0]->subscribe_ac_close_contactor([this] {

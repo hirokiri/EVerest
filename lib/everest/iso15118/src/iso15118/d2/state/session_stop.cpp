@@ -54,6 +54,12 @@ Result SessionStop::feed(Event ev) {
         m_ctx.pause_ctx.reset();
     }
 
+    // The positive Res anchors the CP-oscillator retain time (the res built above is always OK here);
+    // reported once the response actually hit the wire (Session::send_response).
+    m_ctx.session_stop_res_pending = (req->charging_session == dt::ChargingSession::Pause)
+                                         ? session::feedback::SessionStopAction::Pause
+                                         : session::feedback::SessionStopAction::Terminate;
+
     return {};
 }
 

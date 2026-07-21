@@ -121,6 +121,9 @@ private:
     // Armed when the session ends while the EV is still connected: deadline for the EV-first TCP
     // close (CONNECTION_CLOSE_LINGER_MS), after which we close the connection ourselves.
     std::optional<TimePoint> connection_close_deadline{std::nullopt};
+    // The session ended with a FAILED_* response (sequence error, unknown session): the SECC closes
+    // the TCP connection itself without the EV-first linger ([V2G-DC-940]).
+    bool error_termination{false};
 
     std::unique_ptr<SeccEngine> engine{nullptr};
 

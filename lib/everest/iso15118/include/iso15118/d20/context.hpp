@@ -167,6 +167,9 @@ public:
 
     bool session_stopped{false};
     bool session_paused{false};
+    // Armed by the SessionStop state on a positive Res; drained by Session::send_response() right
+    // after the response hit the wire to emit feedback.session_stop_res_sent ([V2G-DC-968] anchor).
+    std::optional<session::feedback::SessionStopAction> session_stop_res_pending{};
 
     std::optional<UpdateDynamicModeParameters> cache_dynamic_mode_parameters;
     std::optional<AcTargetPower> cache_ac_target_power;

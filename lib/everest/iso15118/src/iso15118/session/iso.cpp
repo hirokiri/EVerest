@@ -362,7 +362,7 @@ TimePoint const& Session::poll() {
     }
 
     if (session_over() and not finished_reported) {
-        if (driver_stopped) {
+        if (driver_stopped or error_termination) {
             // Error / abnormal termination: the SupportedAppProtocol negotiation failed
             // (FAILED_NoNegotiation), an unexpected message arrived, the handshake timed out, the
             // negotiated namespace was unknown, or the engine could not be created. [V2G-DC-940]: the SECC
@@ -531,6 +531,21 @@ void Session::send_response() {
             session::logging::ExiMessageDirection::TO_EV);
 
     feedback.v2g_message(response_type);
+
+    // A session-ending response just hit the wire (any protocol): report it. For a positive
+    // SessionStopRes this is the anchor of the CP-oscillator retain time [V2G-DC-968]; only the
+    // oscillator timing hangs off this feedback -- the connection-close linger and the DLINK_*
+    // signals keep their own anchors so the EV's TCP close can still complete over the intact link.
+    // A FAILED_* end (FailedTermination) additionally skips the EV-first close linger: the SECC
+    // closes the TCP connection itself without delay ([V2G-DC-940]).
+    if (engine) {
+        if (const auto stop_action = engine->pop_session_stop_res_pending()) {
+            if (*stop_action == session::feedback::SessionStopAction::FailedTermination) {
+                error_termination = true;
+            }
+            feedback.session_stop_res_sent(*stop_action);
+        }
+    }
 }
 
 void Session::handle_connection_event(io::ConnectionEvent event) {

@@ -41,6 +41,7 @@ public:
 
     bool is_finished() const override;
     bool is_paused() const override;
+    std::optional<session::feedback::SessionStopAction> pop_session_stop_res_pending() override;
 
     void request_shutdown() override;
 

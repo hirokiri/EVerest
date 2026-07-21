@@ -430,6 +430,20 @@ vars:
       failure independently of the EvseManager state machine transitions.
     type: string
     $ref: /evse_manager#/HlcSessionFailedReasonEnum
+  session_stop_res_sent:
+    description: >-
+      Published immediately after a session-ending response has been written to
+      the wire. For a positive SessionStopRes it carries the stop action
+      requested by the EVCC (Terminate/Pause): per DIN 70121 [V2G-DC-968] the
+      SECC keeps the CP oscillator (5% PWM) on for
+      V2G_SECC_CPOscillator_Retain_Time (1.5s) after this event and then
+      switches to X1. For a session-ending FAILED_* response it carries
+      FailedTermination: per [V2G-DC-942] the oscillator is switched off
+      without delay. This event does NOT imply data link teardown:
+      dlink_terminate/dlink_pause still follow after the TCP connection is
+      closed.
+    type: string
+    $ref: /iso15118#/SessionStopAction
   dlink_terminate:
     description: Terminate the data link and become UNMATCHED.
     type: "null"

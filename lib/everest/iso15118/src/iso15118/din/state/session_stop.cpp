@@ -38,6 +38,14 @@ Result SessionStop::feed(Event ev) {
         // [V2G-DC-451] The session is terminated after sending the response. DIN signals a pause only by a
         // later re-join, so the SessionStopReq itself always terminates on the SECC side.
         m_ctx.session_stopped = true;
+
+        // [V2G-DC-968] A positive Res anchors the CP-oscillator retain time; a FAILED Res
+        // (unknown session) ends the session with immediate oscillator-off + SECC-side TCP close
+        // instead ([V2G-DC-942]/[V2G-DC-940]). Reported once the response actually hit the wire
+        // (Session::send_response).
+        m_ctx.session_stop_res_pending = (res.response_code == dt::ResponseCode::OK)
+                                             ? session::feedback::SessionStopAction::Terminate
+                                             : session::feedback::SessionStopAction::FailedTermination;
         return {};
     }
 

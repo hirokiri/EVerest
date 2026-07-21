@@ -100,6 +100,10 @@ bool D20SeccEngine::is_paused() const {
     return ctx.session_paused;
 }
 
+std::optional<session::feedback::SessionStopAction> D20SeccEngine::pop_session_stop_res_pending() {
+    return std::exchange(ctx.session_stop_res_pending, std::nullopt);
+}
+
 void D20SeccEngine::request_shutdown() {
     ctx.request_shutdown();
 }

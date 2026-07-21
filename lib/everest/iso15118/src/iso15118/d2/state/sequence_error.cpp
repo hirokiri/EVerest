@@ -205,6 +205,9 @@ void respond_with_code(Context& ctx, const message_2::Variant& received, dt::Res
 
 void respond_sequence_error(Context& ctx, const message_2::Variant& received) {
     respond_with_code(ctx, received, dt::ResponseCode::FAILED_SequenceError);
+    // Session ends with a FAILED response: oscillator off without delay + SECC-side TCP close
+    // ([V2G-DC-942]/[V2G-DC-940] semantics), reported once the response hit the wire.
+    ctx.session_stop_res_pending = session::feedback::SessionStopAction::FailedTermination;
 }
 
 bool reject_unknown_session(Context& ctx, const message_2::Variant& received) {
@@ -215,6 +218,7 @@ bool reject_unknown_session(Context& ctx, const message_2::Variant& received) {
     // received-type response carrying FAILED_UnknownSession, then terminate the session.
     respond_with_code(ctx, received, dt::ResponseCode::FAILED_UnknownSession);
     ctx.session_stopped = true;
+    ctx.session_stop_res_pending = session::feedback::SessionStopAction::FailedTermination;
     return true;
 }
 

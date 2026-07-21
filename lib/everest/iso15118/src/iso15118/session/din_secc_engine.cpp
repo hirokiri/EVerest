@@ -156,6 +156,10 @@ bool DinSeccEngine::is_paused() const {
     return ctx.session_paused;
 }
 
+std::optional<session::feedback::SessionStopAction> DinSeccEngine::pop_session_stop_res_pending() {
+    return std::exchange(ctx.session_stop_res_pending, std::nullopt);
+}
+
 void DinSeccEngine::request_shutdown() {
     ctx.request_shutdown();
 }

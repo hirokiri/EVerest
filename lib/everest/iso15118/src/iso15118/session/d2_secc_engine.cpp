@@ -168,6 +168,10 @@ bool D2SeccEngine::is_paused() const {
     return ctx.session_paused;
 }
 
+std::optional<session::feedback::SessionStopAction> D2SeccEngine::pop_session_stop_res_pending() {
+    return std::exchange(ctx.session_stop_res_pending, std::nullopt);
+}
+
 void D2SeccEngine::request_shutdown() {
     ctx.request_shutdown();
 }

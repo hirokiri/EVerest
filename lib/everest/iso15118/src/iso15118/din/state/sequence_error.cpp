@@ -148,6 +148,9 @@ void respond_with_code(Context& ctx, const message_din::Variant& received, dt::R
 
 void respond_sequence_error(Context& ctx, const message_din::Variant& received) {
     respond_with_code(ctx, received, dt::ResponseCode::FAILED_SequenceError);
+    // Session ends with a FAILED response: oscillator off without delay + SECC-side TCP close
+    // ([V2G-DC-942]/[V2G-DC-940]), reported once the response hit the wire.
+    ctx.session_stop_res_pending = session::feedback::SessionStopAction::FailedTermination;
 }
 
 } // namespace iso15118::din::state

@@ -197,6 +197,19 @@ void Charger::run_state_machine() {
             shared_context.switch_3ph1ph_threephase_ongoing = false;
         }
 
+        // [V2G-DC-968] V2G_SECC_CPOscillator_Retain_Time expired: switch the oscillator off now,
+        // whatever state we are in. The timer is anchored at the SessionStopRes send, not at the
+        // EV's TCP close. One-shot: always disarm, even if the PWM is already off (e.g. dlink_*
+        // arrived first on the ISO-2 TLS path).
+        if (internal_context.session_stop_pwm_off_deadline.has_value() and
+            std::chrono::steady_clock::now() >= internal_context.session_stop_pwm_off_deadline.value()) {
+            internal_context.session_stop_pwm_off_deadline.reset();
+            if (shared_context.pwm_running) {
+                session_log.evse(false, "CP oscillator retain time expired -> X1 [V2G-DC-968]");
+                cp_state_X1();
+            }
+        }
+
         switch (shared_context.current_state) {
         case EvseState::Disabled:
             if (initialize_state) {
@@ -225,6 +238,7 @@ void Charger::run_state_machine() {
                 shared_context.hlc_allow_close_contactor = false;
                 shared_context.max_current_cable.reset();
                 shared_context.hlc_charging_terminate_pause = HlcTerminatePause::Unknown;
+                internal_context.session_stop_pwm_off_deadline.reset();
                 shared_context.legacy_wakeup_done = false;
                 shared_context.hlc_d20_active = false;
                 cp_state_X1();
@@ -667,6 +681,17 @@ void Charger::run_state_machine() {
                 }
             }
 
+            // The HLC session was already ended by a SessionStop (terminate or pause): never
+            // (re-)enable PWM here. Wait in ChargingPausedEV for the retain-timer X1, a BCB
+            // restart or unplug instead. Without this guard an EV stopping from PrepareCharging
+            // would bounce via ChargingPausedEVSE back here and get 5% re-enabled after the
+            // session ended.
+            if (shared_context.hlc_charging_active and
+                shared_context.hlc_charging_terminate_pause != HlcTerminatePause::Unknown) {
+                shared_context.current_state = EvseState::ChargingPausedEV;
+                break;
+            }
+
             // make sure we are enabling PWM
             if (not hlc_use_5percent_current_session) {
                 update_pwm_now_if_changed_ampere(get_max_current_internal());
@@ -727,6 +752,7 @@ void Charger::run_state_machine() {
             if (initialize_state) {
                 signal_simple_event(types::evse_manager::SessionEventEnum::ChargingStarted);
                 shared_context.hlc_charging_terminate_pause = HlcTerminatePause::Unknown;
+                internal_context.session_stop_pwm_off_deadline.reset();
                 stopwatch.mark("Charging started");
                 stopwatch.report_phase();
                 auto report = stopwatch.report_all_phases();
@@ -867,6 +893,10 @@ void Charger::run_state_machine() {
                 // This is for HLC charging (both AC and DC)
 
                 if (bcb_toggle_detected()) {
+                    // The EV restarts the session: clear the ended-session marker and a pending
+                    // oscillator retain timer so PrepareCharging re-applies PWM again.
+                    shared_context.hlc_charging_terminate_pause = HlcTerminatePause::Unknown;
+                    internal_context.session_stop_pwm_off_deadline.reset();
                     shared_context.current_state = EvseState::PrepareCharging;
                 }
 
@@ -878,7 +908,11 @@ void Charger::run_state_machine() {
                     shared_context.hlc_charging_terminate_pause == HlcTerminatePause::Pause) {
                     // By staying in ChargingPausedEV we allow the EV to restart a session no matter if Terminate
                     // or Pause was used.
-                    if (shared_context.pwm_running) {
+                    // While the [V2G-DC-968] retain timer is armed the oscillator must stay on; the
+                    // global retain check switches to X1 when it expires. Without an armed timer
+                    // (stop signalled only via dlink_*) switch off immediately as before.
+                    if (shared_context.pwm_running and
+                        not internal_context.session_stop_pwm_off_deadline.has_value()) {
                         cp_state_X1();
                     }
                 }
@@ -942,6 +976,14 @@ void Charger::run_state_machine() {
                 }
 
                 if (r.reasons.size() == 0) {
+                    if (shared_context.hlc_charging_active and
+                        shared_context.hlc_charging_terminate_pause != HlcTerminatePause::Unknown) {
+                        // The HLC session already ended with a SessionStop: this is not an EVSE
+                        // pause to resume from. Park in ChargingPausedEV (no SLAC restart, no PWM
+                        // re-enable); the EV comes back via BCB toggle or unplug.
+                        shared_context.current_state = EvseState::ChargingPausedEV;
+                        break;
+                    }
                     // resume charging
                     if (shared_context.hlc_charging_terminate_pause != HlcTerminatePause::Pause) {
                         signal_slac_start(); // wake up SLAC as well
@@ -2032,10 +2074,38 @@ void Charger::dlink_terminate() {
     shared_context.hlc_charging_terminate_pause = HlcTerminatePause::Terminate;
 }
 
+// A positive SessionStopRes was sent: start the CP oscillator retain timer [V2G-DC-968]. The PWM
+// stays on for V2G_SECC_CP_OSCILLATOR_RETAIN and is then switched off by the state machine,
+// independent of the EV's TCP close. dlink_terminate()/dlink_pause() follow later (after the TCP
+// connection is gone) and apply a harmless second X1.
+void Charger::notify_session_stop_res_sent(types::iso15118::SessionStopAction action) {
+    Everest::scoped_lock_timeout lock(state_machine_mutex,
+                                      Everest::MutexDescription::Charger_notify_session_stop_res_sent);
+    if (not shared_context.hlc_charging_active) {
+        return;
+    }
+    shared_context.hlc_allow_close_contactor = false;
+    if (action == types::iso15118::SessionStopAction::FailedTermination) {
+        // [V2G-DC-942] The session ended with a FAILED_* response: switch the oscillator off
+        // without any delay -- no retain time in the error case.
+        shared_context.hlc_charging_terminate_pause = HlcTerminatePause::Terminate;
+        cp_state_X1();
+        return;
+    }
+    shared_context.hlc_charging_terminate_pause = action == types::iso15118::SessionStopAction::Pause
+                                                      ? HlcTerminatePause::Pause
+                                                      : HlcTerminatePause::Terminate;
+    internal_context.session_stop_pwm_off_deadline = std::chrono::steady_clock::now() + V2G_SECC_CP_OSCILLATOR_RETAIN;
+}
+
 void Charger::dlink_error() {
     Everest::scoped_lock_timeout lock(state_machine_mutex, Everest::MutexDescription::Charger_dlink_error);
 
     shared_context.hlc_allow_close_contactor = false;
+
+    // The error path owns the CP sequence from here (t_step_X1/t_step_EF); a pending oscillator
+    // retain X1 must not interleave with it.
+    internal_context.session_stop_pwm_off_deadline.reset();
 
     // Is PWM on at the moment?
     if (not shared_context.pwm_running) {

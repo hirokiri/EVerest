@@ -14,6 +14,10 @@
 
 namespace iso15118 {
 
+namespace session::feedback {
+enum class SessionStopAction;
+} // namespace session::feedback
+
 // Protocol-generation-specific state machine driver, the SECC-side (wire-normal) mirror of EvEngine.
 // The Session runs the (protocol-independent) SupportedAppProtocol handshake itself and then hands the
 // session over to the engine selected for the negotiated protocol. The engine owns the message
@@ -43,6 +47,12 @@ public:
 
     virtual bool is_finished() const = 0;
     virtual bool is_paused() const = 0;
+
+    // Return-and-clear the stop action armed by the SessionStop state when a positive SessionStopRes
+    // was staged. The Session drains this right after the response was written to the socket and
+    // reports it via feedback.session_stop_res_sent -- the anchor of the CP-oscillator retain time
+    // (DIN 70121 [V2G-DC-968]).
+    virtual std::optional<session::feedback::SessionStopAction> pop_session_stop_res_pending() = 0;
 
     // Ask the running state machine to shut the session down gracefully.
     virtual void request_shutdown() = 0;

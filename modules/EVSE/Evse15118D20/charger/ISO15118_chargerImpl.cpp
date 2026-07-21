@@ -734,6 +734,20 @@ iso15118::session::feedback::Callbacks ISO15118_chargerImpl::create_callbacks() 
 
     callbacks.selected_protocol = [this](const std::string& protocol) { publish_selected_protocol(protocol); };
 
+    callbacks.session_stop_res_sent = [this](iso15118::session::feedback::SessionStopAction action) {
+        // Anchor of the CP-oscillator retain time [V2G-DC-968] (Terminate/Pause) resp. of the
+        // immediate oscillator-off in the error case [V2G-DC-942] (FailedTermination); the DLINK_*
+        // signal still follows after the TCP connection is closed.
+        using LibAction = iso15118::session::feedback::SessionStopAction;
+        auto everest_action = types::iso15118::SessionStopAction::Terminate;
+        if (action == LibAction::Pause) {
+            everest_action = types::iso15118::SessionStopAction::Pause;
+        } else if (action == LibAction::FailedTermination) {
+            everest_action = types::iso15118::SessionStopAction::FailedTermination;
+        }
+        publish_session_stop_res_sent(everest_action);
+    };
+
     callbacks.selected_service_parameters = [this](const iso15118::d20::SelectedServiceParameters& parameters) {
         // Captured for ChargeParameterDiscovery to surface DERChargingParameters.ev_supported_dercontrol.
         ev_selected_der_control_functions = parameters.selected_der_control_functions;

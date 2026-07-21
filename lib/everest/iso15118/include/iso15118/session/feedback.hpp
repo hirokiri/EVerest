@@ -78,6 +78,18 @@ enum class CertificateExchangeAction {
     Update,
 };
 
+// How the V2G session ended on the wire, reported right after the session-ending response was
+// written to the socket. Terminate/Pause mirror the ChargingSession of a positive SessionStopRes --
+// the anchor for the CP-oscillator retain time (DIN 70121 [V2G-DC-968]); DIN has no ChargingSession
+// parameter and always maps to Terminate. FailedTermination means the SECC ended the session with a
+// FAILED_* response (sequence error, unknown session): the oscillator must go off without delay
+// ([V2G-DC-942]) and the SECC closes the TCP connection itself ([V2G-DC-940], no linger).
+enum class SessionStopAction {
+    Terminate,
+    Pause,
+    FailedTermination,
+};
+
 struct Callbacks {
     std::function<void(Signal)> signal;
     std::function<void(float)> dc_pre_charge_target_voltage;
@@ -98,6 +110,10 @@ struct Callbacks {
     std::function<void(const dt::VasSelectedServiceList&)> selected_vas_services;
     std::function<void(const AcLimits&)> ac_limits;
     std::function<void(const std::string&, const std::string&)> ev_termination;
+
+    // A positive SessionStopRes was written to the socket (all protocols). Anchors the CP-oscillator
+    // retain time [V2G-DC-968]; does NOT imply link teardown (DLINK_* signals still follow later).
+    std::function<void(SessionStopAction)> session_stop_res_sent;
 
     // ISO 15118-2 Plug-and-Charge: the SECC verified a signed AuthorizationReq and requests PnC
     // authorization for the given eMAID (and PEM contract certificate chain) from the higher layer.
@@ -136,6 +152,7 @@ public:
     void selected_vas_services(const dt::VasSelectedServiceList&) const;
     void ac_limits(const feedback::AcLimits&) const;
     void ev_termination(const std::string&, const std::string&) const;
+    void session_stop_res_sent(feedback::SessionStopAction) const;
     void require_auth_pnc(const std::string& emaid, const std::string& contract_chain_pem) const;
     void certificate_request(const std::string& exi_request_base64, feedback::CertificateExchangeAction action) const;
 
