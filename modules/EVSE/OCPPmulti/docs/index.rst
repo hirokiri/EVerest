@@ -12,6 +12,13 @@ OCPPmulti is the recommended OCPP module for new EVerest configurations. It depr
 :ref:`OCPP <everest_modules_OCPP>` (OCPP 1.6) and :ref:`OCPP201 <everest_modules_OCPP201>` (OCPP 2.0.1 / 2.1)
 modules.
 
+.. warning::
+
+   This module is currently **experimental**: configuration parameters and its
+   integration in EVerest may change without further notice. It is exempt from
+   the stability guarantees and the deprecation period of the EVerest public
+   API until promoted to stable (see :ref:`project-experimental-components`).
+
 In this document, **OCPP 2.x** refers to OCPP 2.0.1 and OCPP 2.1 collectively.
 
 Selecting the OCPP version
@@ -650,3 +657,15 @@ address. This form is not accepted when OCPP 2.x is active (returns
 ``UnknownComponent``) and will be removed per the deprecation policy, it is strongly recommended to migrate
 to canonical addressing. Requests with a non-empty component name are never
 reinterpreted as configuration keys.
+
+Behavioral difference to the legacy OCPP module
+-----------------------------------------------
+
+The legacy ``OCPP`` module ignores ``component.name`` entirely and always
+treats ``variable.name`` as a configuration key. OCPPmulti resolves the
+component: a request whose non-empty component name is not a known address
+returns ``UnknownComponent`` instead of being treated as a key, and a
+``monitor_variables`` registration with such an address never fires.
+Integrations that pass placeholder component names must migrate to the
+canonical address (or, transitionally, the deprecated empty-component form)
+when switching to this module.
