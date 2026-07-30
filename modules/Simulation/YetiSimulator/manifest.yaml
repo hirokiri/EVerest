@@ -30,6 +30,14 @@ config:
     default: 50.0
     minimum: 50.0
     maximum: 60.0
+  caps_min_current_A:
+    description: Minimal current on AC side reported in hardware capabilities. -1 means use the built-in default of the simulated hardware (6 A import / 0 A export).
+    type: integer
+    default: -1
+  caps_max_current_A:
+    description: Maximum current on AC side reported in hardware capabilities. -1 means use the built-in default of the simulated hardware (32 A import / 16 A export).
+    type: integer
+    default: -1
 provides:
   powermeter:
     interface: powermeter
