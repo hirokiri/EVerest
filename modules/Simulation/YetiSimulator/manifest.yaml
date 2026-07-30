@@ -19,6 +19,14 @@ config:
     description: Dummy meter value blob sent on transaction stop to be used for testing
     type: string
     default: "test stop value"
+  caps_min_current_A:
+    description: Minimal current on AC side reported in hardware capabilities. -1 means use the built-in default of the simulated hardware (6 A import / 0 A export).
+    type: integer
+    default: -1
+  caps_max_current_A:
+    description: Maximum current on AC side reported in hardware capabilities. -1 means use the built-in default of the simulated hardware (32 A import / 16 A export).
+    type: integer
+    default: -1
 provides:
   powermeter:
     interface: powermeter
