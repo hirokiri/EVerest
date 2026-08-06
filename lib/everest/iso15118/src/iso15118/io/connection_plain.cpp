@@ -21,7 +21,7 @@ static constexpr auto DEFAULT_SOCKET_BACKLOG = 4;
 
 ConnectionPlain::ConnectionPlain(PollManager& poll_manager_, const std::string& interface_name) :
     poll_manager(poll_manager_) {
-    sockaddr_in6 address;
+    sockaddr_in6 address{};
     if (not get_first_sockaddr_in6_for_interface(interface_name, address)) {
         const auto msg = "Failed to get ipv6 socket address for interface " + interface_name;
         log_and_throw(msg.c_str());
@@ -62,6 +62,30 @@ ConnectionPlain::ConnectionPlain(PollManager& poll_manager_, const std::string& 
     }
 
     poll_manager.register_fd(fd, [this]() { this->handle_connect(); });
+}
+
+ConnectionPlain::ConnectionPlain(PollManager& poll_manager_, int connected_fd) :
+    ConnectionPlain(poll_manager_, connected_fd, std::nullopt) {
+}
+
+ConnectionPlain::ConnectionPlain(PollManager& poll_manager_, int connected_fd,
+                                 const std::optional<sha512_hash_t>& vehicle_cert_hash_) :
+    poll_manager(poll_manager_), fd(connected_fd), vehicle_cert_hash(vehicle_cert_hash_) {
+
+    sockaddr_in6 local_adr{};
+    socklen_t length = sizeof(local_adr);
+
+    const auto sock_name_result = getsockname(fd, reinterpret_cast<sockaddr*>(&local_adr), &length);
+    if (sock_name_result == 0 and local_adr.sin6_family == AF_INET6) {
+        std::memcpy(&end_point.address, &local_adr.sin6_addr, sizeof(end_point.address));
+        end_point.port = ntohs(local_adr.sin6_port);
+    } else {
+        logf_warning("getsockname() failed or local adr had no ipv6 address, falling back");
+        end_point.port = 50000;
+        std::memset(&end_point.address, 0x00, sizeof(end_point.address));
+    }
+
+    poll_manager.register_fd(fd, [this]() { this->handle_bootstrap(); });
 }
 
 ConnectionPlain::~ConnectionPlain() = default;
@@ -152,6 +176,17 @@ void ConnectionPlain::handle_data() {
     assert(connection_open);
 
     call_if_available(event_callback, ConnectionEvent::NEW_DATA);
+}
+
+void ConnectionPlain::handle_bootstrap() {
+    call_if_available(event_callback, ConnectionEvent::ACCEPTED);
+    connection_open = true;
+    call_if_available(event_callback, ConnectionEvent::OPEN);
+
+    poll_manager.unregister_fd(fd);
+
+    // The incoming v2gtp message is handled one poll cycle later
+    poll_manager.register_fd(fd, [this]() { this->handle_data(); });
 }
 
 void ConnectionPlain::close() {
