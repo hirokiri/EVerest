@@ -186,6 +186,7 @@ void Evse::try_resume_transaction() {
 
         if (this->id_connector_map.count(transaction->connector_id) != 0) {
             this->transaction = std::move(transaction);
+            this->transaction->evse_id = this->evse_id;
             this->start_metering_timers(this->transaction->start_time);
         } else {
             EVLOG_error << "Can't resume transaction on evse_id " << evse_id << " for non existent connector "
@@ -253,6 +254,7 @@ void Evse::open_transaction(const std::string& transaction_id, const std::int32_
 
     this->transaction = std::make_unique<EnhancedTransaction>(*this->database_handler.get(), tx_database_enabled);
     this->transaction->transactionId = transaction_id;
+    this->transaction->evse_id = this->evse_id;
     this->transaction->connector_id = connector_id;
     this->transaction->id_token_sent = id_token.has_value();
     this->transaction->start_time = timestamp;

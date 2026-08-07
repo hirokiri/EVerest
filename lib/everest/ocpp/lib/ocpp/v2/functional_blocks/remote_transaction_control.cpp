@@ -399,9 +399,11 @@ void RemoteTransactionControl::handle_trigger_message(Call<TriggerMessageRequest
                 opt_meter_value.emplace(1, meter_value);
             }
             const auto& enhanced_transaction = evse.get_transaction();
+            EVSE evse_info{enhanced_transaction->evse_id};
+            evse_info.connectorId.emplace(enhanced_transaction->connector_id);
             this->transaction.transaction_event_req(
                 TransactionEventEnum::Updated, DateTime(), enhanced_transaction->get_transaction(),
-                TriggerReasonEnum::Trigger, enhanced_transaction->get_seq_no(), std::nullopt, std::nullopt,
+                TriggerReasonEnum::Trigger, enhanced_transaction->get_seq_no(), std::nullopt, evse_info,
                 std::nullopt, opt_meter_value, std::nullopt,
                 !this->context.connectivity_manager.is_websocket_connected(), std::nullopt, true);
         };

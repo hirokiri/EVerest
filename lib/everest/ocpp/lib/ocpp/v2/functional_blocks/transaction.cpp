@@ -171,8 +171,12 @@ void TransactionBlock::on_transaction_finished(const std::int32_t evse_id, const
         trigger_reason == ocpp::v2::TriggerReasonEnum::StopAuthorized ? id_token : std::nullopt;
 
     const bool is_offline = !this->context.connectivity_manager.is_websocket_connected();
+    // evse is optional in OCPP 2.0.1, but some CSMS implementations expect it on every
+    // transaction event (e.g. DAIHEN DQC chargers always include it)
+    EVSE ended_evse{evse_id};
+    ended_evse.connectorId.emplace(enhanced_transaction->connector_id);
     this->transaction_event_req(TransactionEventEnum::Ended, timestamp, enhanced_transaction->get_transaction(),
-                                trigger_reason, enhanced_transaction->get_seq_no(), std::nullopt, std::nullopt,
+                                trigger_reason, enhanced_transaction->get_seq_no(), std::nullopt, ended_evse,
                                 transaction_id_token, meter_values, std::nullopt, is_offline, std::nullopt);
 
     // I05.FR.02: When offline, the CSMS response with totalCost will not arrive, so show the fallback message.

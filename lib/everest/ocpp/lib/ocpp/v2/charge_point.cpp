@@ -266,9 +266,11 @@ void ChargePoint::on_authorized(const std::int32_t evse_id, const std::int32_t /
 
     // set id_token of enhanced_transaction and send TransactionEvent(Updated) with id_token
     transaction->set_id_token_sent();
+    EVSE evse_info{transaction->evse_id};
+    evse_info.connectorId.emplace(transaction->connector_id);
     this->transaction->transaction_event_req(TransactionEventEnum::Updated, ocpp::DateTime(),
                                              transaction->get_transaction(), TriggerReasonEnum::Authorized,
-                                             transaction->get_seq_no(), std::nullopt, std::nullopt, id_token,
+                                             transaction->get_seq_no(), std::nullopt, evse_info, id_token,
                                              std::nullopt, std::nullopt, this->is_offline(), std::nullopt);
 }
 
@@ -372,9 +374,11 @@ bool ChargePoint::on_charging_state_changed(const std::uint32_t evse_id, const C
         EVLOG_debug << "Trying to send charging state changed without actual change, dropping message";
     } else {
         transaction->chargingState = charging_state;
+        EVSE evse_info{transaction->evse_id};
+        evse_info.connectorId.emplace(transaction->connector_id);
         this->transaction->transaction_event_req(TransactionEventEnum::Updated, DateTime(),
                                                  transaction->get_transaction(), trigger_reason,
-                                                 transaction->get_seq_no(), std::nullopt, std::nullopt, std::nullopt,
+                                                 transaction->get_seq_no(), std::nullopt, evse_info, std::nullopt,
                                                  std::nullopt, std::nullopt, this->is_offline(), std::nullopt);
     }
     return true;
@@ -519,8 +523,10 @@ void ChargePoint::initialize(const std::map<std::int32_t, std::int32_t>& evse_co
         if (!filtered_meter_value.sampledValue.empty()) {
             const auto trigger = type == ReadingContextEnum::Sample_Clock ? TriggerReasonEnum::MeterValueClock
                                                                           : TriggerReasonEnum::MeterValuePeriodic;
+            EVSE evse_info{transaction.evse_id};
+            evse_info.connectorId.emplace(transaction.connector_id);
             this->transaction->transaction_event_req(TransactionEventEnum::Updated, DateTime(), transaction, trigger,
-                                                     transaction.get_seq_no(), std::nullopt, std::nullopt, std::nullopt,
+                                                     transaction.get_seq_no(), std::nullopt, evse_info, std::nullopt,
                                                      std::vector<MeterValue>(1, filtered_meter_value), std::nullopt,
                                                      this->is_offline(), std::nullopt);
         }

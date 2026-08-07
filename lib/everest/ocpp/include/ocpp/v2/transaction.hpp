@@ -19,6 +19,7 @@ struct EnhancedTransaction : public Transaction {
     }
 
     bool id_token_sent = false;
+    std::int32_t evse_id = 0;
     std::int32_t connector_id = 0;
     std::int32_t seq_no = 0;
     std::optional<float> active_energy_import_start_value;
