@@ -104,6 +104,7 @@ TEST_F(ChargePointConnectivityTest, InjectedManagerNotAutoWiredForLifecycle) {
     EXPECT_CALL(*this->connectivity_manager, set_websocket_disconnected_callback(_)).Times(0);
     EXPECT_CALL(*this->connectivity_manager, set_websocket_connection_failed_callback(_)).Times(0);
     EXPECT_CALL(*this->connectivity_manager, set_message_callback(_)).Times(0);
+    EXPECT_CALL(*this->connectivity_manager, set_configure_network_connection_profile_callback(_)).Times(0);
 
     auto charge_point = make_charge_point();
 
@@ -123,6 +124,21 @@ TEST_F(ChargePointConnectivityTest, StartConnectsStopDisconnects) {
     ON_CALL(*this->connectivity_manager, is_websocket_connected()).WillByDefault(Return(false));
     EXPECT_CALL(*this->connectivity_manager, connect(_)).Times(AtLeast(1));
     EXPECT_CALL(*this->connectivity_manager, disconnect()).Times(AtLeast(1));
+
+    auto charge_point = make_charge_point();
+    charge_point->start({}, BootReasonEnum::PowerUp, {});
+    charge_point->stop();
+}
+
+// Closing the socket is not enough: a disconnect callback already in flight on the websocket thread would
+// still reach on_websocket_disconnected() and touch the message queue and timers that stop() is about to
+// tear down. stop() therefore disarms the connection callbacks right after disconnect().
+TEST_F(ChargePointConnectivityTest, StopDisarmsConnectionCallbacksAfterDisconnect) {
+    ON_CALL(*this->connectivity_manager, is_websocket_connected()).WillByDefault(Return(false));
+
+    const ::testing::InSequence seq;
+    EXPECT_CALL(*this->connectivity_manager, disconnect()).Times(AtLeast(1));
+    EXPECT_CALL(*this->connectivity_manager, disarm_connection_callbacks()).Times(1);
 
     auto charge_point = make_charge_point();
     charge_point->start({}, BootReasonEnum::PowerUp, {});
