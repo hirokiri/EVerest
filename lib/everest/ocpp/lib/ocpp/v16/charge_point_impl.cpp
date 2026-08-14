@@ -1155,6 +1155,8 @@ bool ChargePointImpl::start(const std::map<int, ChargePointStatus>& connector_st
         init(connector_status_map, resuming_session_ids);
     }
     this->bootreason = bootreason;
+    // Lift the suppression a preceding stop() put in place, so the connection state is reported again.
+    this->connectivity_manager->arm_connection_callbacks();
     // Publish the initial default price before connecting (offline state at startup).
     this->publish_default_price(true);
     this->connectivity_manager->set_message_callback(
@@ -2704,20 +2706,29 @@ void ChargePointImpl::handleTriggerMessageRequest(ocpp::Call<TriggerMessageReque
         if (!call.msg.connectorId.has_value()) {
             // send a status notification for every connector
             for (std::int32_t c = 0; c <= this->configuration.getNumberOfConnectors(); c++) {
-                const ErrorInfo error_info =
-                    this->status->get_latest_error(c).value_or(ErrorInfo("", ChargePointErrorCode::NoError, false));
-                this->status_notification(c, error_info.error_code, this->status->get_state(c), ocpp::DateTime(),
-                                          error_info.info, error_info.vendor_id, error_info.vendor_error_code, true);
+                this->triggered_status_notification(c);
             }
         } else {
-            const ErrorInfo error_info =
-                this->status->get_latest_error(connector).value_or(ErrorInfo("", ChargePointErrorCode::NoError, false));
-            this->status_notification(connector, error_info.error_code, this->status->get_state(connector),
-                                      ocpp::DateTime(), error_info.info, error_info.vendor_id,
-                                      error_info.vendor_error_code, true);
+            this->triggered_status_notification(connector);
         }
         break;
     }
+}
+
+void ChargePointImpl::triggered_status_notification(const std::int32_t connector) {
+    const auto latest_error = this->status->get_latest_error(connector);
+    const ErrorInfo error_info = latest_error.value_or(ErrorInfo("", ChargePointErrorCode::NoError, false));
+    const auto status = this->status->get_state(connector);
+
+    auto info = error_info.info;
+    if (not latest_error.has_value() and status == ChargePointStatus::SuspendedEVSE and
+        this->configuration.getReportSuspendedEVSEReasonChange()) {
+        // no error owns the info field, so report why the connector is suspended
+        info = this->status->get_suspend_reason(connector);
+    }
+
+    this->status_notification(connector, error_info.error_code, status, ocpp::DateTime(), info, error_info.vendor_id,
+                              error_info.vendor_error_code, true);
 }
 
 void ChargePointImpl::handleGetDiagnosticsRequest(ocpp::Call<GetDiagnosticsRequest> call) {
@@ -4655,6 +4666,11 @@ void ChargePointImpl::on_suspend_charging_ev(std::int32_t connector, const std::
 }
 
 void ChargePointImpl::on_suspend_charging_evse(std::int32_t connector, const std::optional<CiString<50>> info) {
+    if (not this->configuration.getReportSuspendedEVSEReasonChange() and
+        this->status->get_state(connector) == ChargePointStatus::SuspendedEVSE) {
+        // the SuspendedEVSE self transition is not offered to the state machine at all
+        return;
+    }
     this->status->submit_event(connector, FSMEvent::PauseChargingEVSE, ocpp::DateTime(), info);
 }
 
