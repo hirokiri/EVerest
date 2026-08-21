@@ -8,7 +8,9 @@
 /// ConnectivityManager, and assert observable interactions only:
 ///   * that an injected manager is NOT auto-wired for the websocket lifecycle at construction (only set_logging),
 ///     and that the message callback is registered later in start(),
-///   * that the drive surface (start/stop/outgoing message/offline query) hits the manager, and
+///   * that the drive surface (start/stop/outgoing message/offline query) hits the manager,
+///   * that the connection callbacks stay armed for the whole lifetime and are disarmed only at
+///     destruction, and
 ///   * the security-profile switch + revert behaviour orchestrated via the manager and the
 ///     internal websocket revert timer.
 
@@ -19,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -130,36 +133,90 @@ TEST_F(ChargePointConnectivityTest, StartConnectsStopDisconnects) {
     charge_point->stop();
 }
 
-// Closing the socket is not enough: a disconnect callback already in flight on the websocket thread would
-// still reach on_websocket_disconnected() and touch the message queue and timers that stop() is about to
-// tear down. stop() therefore disarms the connection callbacks right after disconnect().
-TEST_F(ChargePointConnectivityTest, StopDisarmsConnectionCallbacksAfterDisconnect) {
+// stop() is the external "stop OCPP communication" control, not destruction: the charge point stays alive
+// and restartable, and its owner still gets the disconnect notification. Disarming here raced the deferred
+// delivery of that notification and swallowed it.
+TEST_F(ChargePointConnectivityTest, StopKeepsConnectionCallbacksArmed) {
     ON_CALL(*this->connectivity_manager, is_websocket_connected()).WillByDefault(Return(false));
 
-    const ::testing::InSequence seq;
     EXPECT_CALL(*this->connectivity_manager, disconnect()).Times(AtLeast(1));
-    EXPECT_CALL(*this->connectivity_manager, disarm_connection_callbacks()).Times(1);
+    EXPECT_CALL(*this->connectivity_manager, disarm_connection_callbacks()).Times(0);
 
     auto charge_point = make_charge_point();
     charge_point->start({}, BootReasonEnum::PowerUp, {});
     charge_point->stop();
+
+    // Verify while still alive: destruction is the only disarm site.
+    testing::Mock::VerifyAndClearExpectations(this->connectivity_manager.get());
 }
 
-// A restart reuses the same ConnectivityManager, so start() must arm the connection callbacks that the
-// preceding stop() disarmed. Otherwise the connection state stays suppressed after the first stop().
-TEST_F(ChargePointConnectivityTest, RestartArmsConnectionCallbacksAgain) {
+// Neither half the owner waits for (offline after stop(), online after restart()) survives a disarm.
+TEST_F(ChargePointConnectivityTest, StopRestartCycleNeverDisarms) {
     ON_CALL(*this->connectivity_manager, is_websocket_connected()).WillByDefault(Return(false));
 
-    const ::testing::InSequence seq;
-    EXPECT_CALL(*this->connectivity_manager, arm_connection_callbacks()).Times(1);
-    EXPECT_CALL(*this->connectivity_manager, disarm_connection_callbacks()).Times(1);
-    EXPECT_CALL(*this->connectivity_manager, arm_connection_callbacks()).Times(1);
-    EXPECT_CALL(*this->connectivity_manager, disarm_connection_callbacks()).Times(1);
+    EXPECT_CALL(*this->connectivity_manager, connect(_)).Times(AtLeast(2));
+    EXPECT_CALL(*this->connectivity_manager, disarm_connection_callbacks()).Times(0);
 
     auto charge_point = make_charge_point();
     charge_point->start({}, BootReasonEnum::PowerUp, {});
     charge_point->stop();
     EXPECT_TRUE(charge_point->restart({}, BootReasonEnum::ApplicationReset));
+    charge_point->stop();
+
+    testing::Mock::VerifyAndClearExpectations(this->connectivity_manager.get());
+}
+
+// The use-after-free is at destruction: a deferred callback landing while members are destroyed. The
+// destructor body runs before any member is gone and blocks on an in-flight callback.
+TEST_F(ChargePointConnectivityTest, DestructionDisarmsConnectionCallbacks) {
+    ON_CALL(*this->connectivity_manager, is_websocket_connected()).WillByDefault(Return(false));
+
+    auto charge_point = make_charge_point();
+    charge_point->start({}, BootReasonEnum::PowerUp, {});
+    charge_point->stop();
+
+    EXPECT_CALL(*this->connectivity_manager, disarm_connection_callbacks()).Times(1);
+    charge_point.reset();
+}
+
+// The connection state callback reports which of the configured network connection slots the CSMS connection
+// uses, alongside the profile behind that slot, for both the connect and the disconnect direction.
+TEST_F(ChargePointConnectivityTest, ConnectionStateChangedCallbackReportsConfigurationSlot) {
+    ON_CALL(*this->connectivity_manager, is_websocket_connected()).WillByDefault(Return(false));
+
+    constexpr int CONFIGURATION_SLOT = 7;
+    constexpr std::int32_t SECURITY_PROFILE = 1;
+
+    ocpp::v2::NetworkConnectionProfile profile;
+    profile.securityProfile = SECURITY_PROFILE;
+
+    struct Report {
+        bool is_connected;
+        int configuration_slot;
+        std::int32_t security_profile;
+    };
+    std::vector<Report> reports;
+
+    auto charge_point = make_charge_point();
+    charge_point->register_connection_state_changed_callback(
+        [&reports](const bool is_connected, const int configuration_slot,
+                   const ocpp::v2::NetworkConnectionProfile& network_connection_profile) {
+            reports.push_back({is_connected, configuration_slot, network_connection_profile.securityProfile});
+        });
+
+    charge_point->start({}, BootReasonEnum::PowerUp, {});
+
+    charge_point->on_websocket_connected(CONFIGURATION_SLOT, profile, ocpp::OcppProtocolVersion::v16);
+    charge_point->on_websocket_disconnected(CONFIGURATION_SLOT, profile);
+
+    ASSERT_EQ(reports.size(), 2);
+    EXPECT_TRUE(reports.at(0).is_connected);
+    EXPECT_EQ(reports.at(0).configuration_slot, CONFIGURATION_SLOT);
+    EXPECT_EQ(reports.at(0).security_profile, SECURITY_PROFILE);
+    EXPECT_FALSE(reports.at(1).is_connected);
+    EXPECT_EQ(reports.at(1).configuration_slot, CONFIGURATION_SLOT);
+    EXPECT_EQ(reports.at(1).security_profile, SECURITY_PROFILE);
+
     charge_point->stop();
 }
 

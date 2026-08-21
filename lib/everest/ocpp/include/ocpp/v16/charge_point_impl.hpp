@@ -179,7 +179,9 @@ private:
     std::function<void(const std::string& system_time)> set_system_time_callback;
     std::function<void(const BootNotificationResponse& boot_notification_response)> boot_notification_response_callback;
     std::function<void()> signal_set_charging_profiles_callback;
-    std::function<void(bool is_connected)> connection_state_changed_callback;
+    std::function<void(const bool is_connected, const int configuration_slot,
+                       const ocpp::v2::NetworkConnectionProfile& network_connection_profile)>
+        connection_state_changed_callback;
 
     std::function<GetLogResponse(const GetDiagnosticsRequest& request)> upload_diagnostics_callback;
     std::function<void(const UpdateFirmwareRequest msg)> update_firmware_callback;
@@ -457,7 +459,9 @@ public:
         const std::optional<SecurityConfiguration>& security_configuration,
         const std::function<void(const std::string& message, MessageDirection direction)>& message_callback);
 
-    virtual ~ChargePointImpl() override = default;
+    /// \brief Disarms the connection callbacks so a deferred websocket callback cannot reach a
+    /// partly destroyed charge point.
+    virtual ~ChargePointImpl() override;
 
     /// \brief Allow to update the ChargePoint core information which will be sent in BootNotification.req
     void update_chargepoint_information(const std::string& vendor, const std::string& model,
@@ -911,7 +915,9 @@ public:
     /// \brief registers a \p callback function that can be used when the connection state to CSMS changes. The
     /// connection_state_changed_callback is called when chargepoint has connected to or disconnected from the CSMS.
     /// \param callback
-    void register_connection_state_changed_callback(const std::function<void(bool is_connected)>& callback);
+    void register_connection_state_changed_callback(
+        const std::function<void(const bool is_connected, const int configuration_slot,
+                                 const ocpp::v2::NetworkConnectionProfile& network_connection_profile)>& callback);
 
     /// \brief registers a \p callback function that can be used to publish the response to a Get15118Certificate.req
     /// wrapped in a DataTransfer.req . The get_15118_ev_certificate_response_callback is called after the response to a

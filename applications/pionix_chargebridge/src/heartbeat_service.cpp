@@ -12,7 +12,6 @@
 #include <protocol/cb_management.h>
 
 namespace {
-const int default_udp_timeout_ms = 1000;
 const std::uint16_t s_to_ms_factor = 1000;
 } // namespace
 
@@ -42,7 +41,7 @@ heartbeat_service::heartbeat_service(heartbeat_config const& config,
 }
 
 void heartbeat_service::create_udp_client(std::string const& remote, uint16_t remote_port) {
-    m_udp = std::make_unique<everest::lib::io::udp::udp_client>(remote, remote_port, default_udp_timeout_ms);
+    m_udp = std::make_unique<everest::lib::io::udp::udp_client>(remote, remote_port);
     m_udp_on_error = false;
     m_udp_ready = false;
     m_udp->set_rx_handler([this](auto const& data, auto&) { handle_udp_rx(data); });
@@ -81,21 +80,19 @@ heartbeat_service::~heartbeat_service() {
 }
 
 bool heartbeat_service::register_events(everest::lib::io::event::fd_event_handler& handler) {
-    // clang-format off
-    return
-        handler.register_event_handler(m_udp.get()) &&
-        handler.register_event_handler(&m_heartbeat_timer, [this](auto&) { handle_heartbeat_timer(); }) &&
-        handler.register_event_handler(&m_error_timer, [this](auto&) { handle_error_timer(); });
-    // clang-format on
+    auto result = true;
+    result = handler.register_event_handler(m_udp.get()) && result;
+    result = handler.register_event_handler(&m_heartbeat_timer, [this](auto&) { handle_heartbeat_timer(); }) && result;
+    result = handler.register_event_handler(&m_error_timer, [this](auto&) { handle_error_timer(); }) && result;
+    return result;
 }
 
 bool heartbeat_service::unregister_events(everest::lib::io::event::fd_event_handler& handler) {
-    // clang-format off
-    return
-        handler.unregister_event_handler(m_udp.get()) &&
-        handler.unregister_event_handler(&m_heartbeat_timer) &&
-        handler.unregister_event_handler(&m_error_timer);
-    // clang-format on
+    auto result = true;
+    result = handler.unregister_event_handler(m_udp.get()) && result;
+    result = handler.unregister_event_handler(&m_heartbeat_timer) && result;
+    result = handler.unregister_event_handler(&m_error_timer) && result;
+    return result;
 }
 
 void heartbeat_service::handle_error_timer() {

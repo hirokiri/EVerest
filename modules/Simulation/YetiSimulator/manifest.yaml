@@ -30,12 +30,30 @@ config:
     default: 50.0
     minimum: 50.0
     maximum: 60.0
+  max_current_A_import:
+    description: >-
+      Maximum import current in amps reported as a hardware capability. The default matches a 32 A AC wallbox. DC
+      configurations must raise this, since the energy manager derives the available power from
+      max_current_A_import * max_phase_count_import * nominal_voltage_V and would otherwise cap a high-power DC
+      supply at the AC-side figure.
+    type: number
+    minimum: 0
+    default: 32.0
+  min_current_A_import:
+    description: Minimum import current in amps reported as a hardware capability
+    type: number
+    minimum: 0
+    default: 6.0
   caps_min_current_A:
-    description: Minimal current on AC side reported in hardware capabilities. -1 means use the built-in default of the simulated hardware (6 A import / 0 A export).
+    description: >-
+      Minimal current on AC side reported in hardware capabilities.
+      -1 means use min_current_A_import for import and the built-in default for export (0 A).
     type: integer
     default: -1
   caps_max_current_A:
-    description: Maximum current on AC side reported in hardware capabilities. -1 means use the built-in default of the simulated hardware (32 A import / 16 A export).
+    description: >-
+      Maximum current on AC side reported in hardware capabilities.
+      -1 means use max_current_A_import for import and the built-in default for export (16 A).
     type: integer
     default: -1
 provides:
