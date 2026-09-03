@@ -87,6 +87,13 @@ public:
         };
     }
 
+    // Publishes (and, if latched, caches) an initial value for an api var before the providing
+    // module has published anything. Used to seed variables whose "not yet published" state would
+    // otherwise be indistinguishable from an error when queried via <var>/get.
+    void publish_initial_api_var(std::string const& var, std::string const& payload, bool latch_value) {
+        publish_and_cache_variable(topics.everest_to_extern(var), payload, latch_value);
+    }
+
     template <typename CommCheckT> void setup_heartbeat_generator(CommCheckT* comm_check, int interval_ms) {
         auto topic = topics.everest_to_extern("heartbeat");
         auto action = [this, topic]() {
@@ -99,7 +106,7 @@ public:
 
 private:
     void subscribe_latched_value_request(std::string const& var, std::string const& topic);
-    void publish_and_cache_variable(std::string const& topic, std::string const& payload, bool cache_value);
+    void publish_and_cache_variable(std::string const& topic, std::string payload, bool cache_value);
     void log_forward_api_var_error(std::string const& topic, char const* what);
     void subscribe_mqtt_topic(std::string const& topic, ParseAndPublishFtor parse_and_publish);
     void init_entrypoint_API(V1_0::types::entrypoint::CommunicationParameters const& comm_parameters);
