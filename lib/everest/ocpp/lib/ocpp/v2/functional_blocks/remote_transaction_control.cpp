@@ -58,7 +58,7 @@ bool is_evse_connector_available(const EvseInterface& evse) {
 
 RemoteTransactionControl::RemoteTransactionControl(
     const FunctionalBlockContext& functional_block_context, TransactionInterface& transaction,
-    SmartChargingInterface& smart_charging, MeterValuesInterface& meter_values, AvailabilityInterface& availability,
+    SmartChargingInterface* smart_charging, MeterValuesInterface& meter_values, AvailabilityInterface& availability,
     FirmwareUpdateInterface& firmware_update, SecurityInterface& security, ReservationInterface* reservation,
     ProvisioningInterface& provisioning, UnlockConnectorCallback unlock_connector_callback,
     RemoteStartTransactionCallback remote_start_transaction_callback, StopTransactionCallback stop_transaction_callback,
@@ -126,6 +126,7 @@ void RemoteTransactionControl::handle_remote_start_transaction_request(Call<Requ
     response.status = RequestStartStopStatusEnum::Rejected;
 
     const bool is_smart_charging_enabled =
+        this->smart_charging != nullptr and
         this->context.device_model.get_optional_value<bool>(ControllerComponentVariables::SmartChargingCtrlrEnabled)
             .value_or(false);
 
@@ -170,7 +171,7 @@ void RemoteTransactionControl::handle_remote_start_transaction_request(Call<Requ
 
                 if (charging_profile.chargingProfilePurpose == ChargingProfilePurposeEnum::TxProfile) {
 
-                    const auto add_profile_response = this->smart_charging.conform_validate_and_add_profile(
+                    const auto add_profile_response = this->smart_charging->conform_validate_and_add_profile(
                         msg.chargingProfile.value(), evse_id, ChargingLimitSourceEnumStringType::CSO,
                         AddChargingProfileSource::RequestStartTransactionRequest);
                     if (add_profile_response.status == ChargingProfileStatusEnum::Accepted) {
@@ -336,11 +337,18 @@ void RemoteTransactionControl::handle_trigger_message(Call<TriggerMessageRequest
         }
         break;
     }
-    case MessageTriggerEnum::SignV2GCertificate: {
+    case MessageTriggerEnum::SignV2GCertificate:
+    case MessageTriggerEnum::SignV2G20Certificate: {
+        const bool v2g20 = (msg.requestedMessage == MessageTriggerEnum::SignV2G20Certificate);
+        const auto trigger_name = v2g20 ? "SignV2G20Certificate" : "SignV2GCertificate";
+        const auto certificate_signing_use =
+            v2g20 ? ocpp::CertificateSigningUseEnum::V2G20Certificate : ocpp::CertificateSigningUseEnum::V2GCertificate;
+
         if (!this->context.device_model
                  .get_optional_value<bool>(ControllerComponentVariables::V2GCertificateInstallationEnabled)
                  .value_or(false)) {
-            EVLOG_warning << "CSMS requested SignV2GCertificate but V2GCertificateInstallationEnabled is configured as "
+            EVLOG_warning << "CSMS requested " << trigger_name
+                          << " but V2GCertificateInstallationEnabled is configured as "
                              "false, so the TriggerMessage is rejected!";
             response.status = TriggerMessageStatusEnum::Rejected;
             StatusInfo status_info;
@@ -350,10 +358,22 @@ void RemoteTransactionControl::handle_trigger_message(Call<TriggerMessageRequest
             break;
         }
 
-        const auto rejection =
-            this->security.is_sign_certificate_possible(ocpp::CertificateSigningUseEnum::V2GCertificate);
+        // The ISO 15118-20 SECC leaf exists on OCPP 2.1 only
+        if (v2g20 and !this->security.v2g20_certificate_installation_enabled()) {
+            EVLOG_warning << "CSMS requested SignV2G20Certificate on a connection that is not OCPP 2.1, so the "
+                             "TriggerMessage is rejected!";
+            response.status = TriggerMessageStatusEnum::Rejected;
+            StatusInfo status_info;
+            status_info.reasonCode = "NotSupported";
+            status_info.additionalInfo = "V2G20Certificate requires OCPP 2.1";
+            response.statusInfo = status_info;
+            break;
+        }
+
+        const auto rejection = this->security.is_sign_certificate_possible(certificate_signing_use);
         if (rejection.has_value()) {
-            EVLOG_warning << "CSMS requested SignV2GCertificate but the SignCertificate.req cannot be sent right now, "
+            EVLOG_warning << "CSMS requested " << trigger_name
+                          << " but the SignCertificate.req cannot be sent right now, "
                              "so the TriggerMessage is rejected: "
                           << rejection->reasonCode.get();
             response.status = TriggerMessageStatusEnum::Rejected;
@@ -369,7 +389,6 @@ void RemoteTransactionControl::handle_trigger_message(Call<TriggerMessageRequest
 
     case MessageTriggerEnum::PublishFirmwareStatusNotification:
     case MessageTriggerEnum::SignCombinedCertificate:
-    case MessageTriggerEnum::SignV2G20Certificate:
     case MessageTriggerEnum::CustomTrigger:
         response.status = TriggerMessageStatusEnum::NotImplemented;
         break;
@@ -470,9 +489,12 @@ void RemoteTransactionControl::handle_trigger_message(Call<TriggerMessageRequest
         this->security.sign_certificate_req(ocpp::CertificateSigningUseEnum::V2GCertificate, true);
     } break;
 
+    case MessageTriggerEnum::SignV2G20Certificate: {
+        this->security.sign_certificate_req(ocpp::CertificateSigningUseEnum::V2G20Certificate, true);
+    } break;
+
     case MessageTriggerEnum::PublishFirmwareStatusNotification:
     case MessageTriggerEnum::SignCombinedCertificate:
-    case MessageTriggerEnum::SignV2G20Certificate:
     case MessageTriggerEnum::CustomTrigger:
         EVLOG_error << "Sent a TriggerMessageResponse::Accepted while not following up with a message";
         break;

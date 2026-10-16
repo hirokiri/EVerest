@@ -1,3 +1,4 @@
+add_subdirectory(d2)
 add_subdirectory(d20)
 add_subdirectory(fsm)
 add_subdirectory(io)
@@ -13,5 +14,5 @@ add_subdirectory(states)
 #
 # target_link_libraries(secc
 #     PRIVATE
-#         iso15118::iso15118
+#         everest::iso15118
 # )

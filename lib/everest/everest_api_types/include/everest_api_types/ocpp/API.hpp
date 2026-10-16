@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 - 2025 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 
 #pragma once
 #include <cstdint>
@@ -201,6 +201,7 @@ struct OcppTransactionEvent {
     std::string session_id;
     std::optional<EVSE> evse;
     std::optional<std::string> transaction_id;
+    std::string timestamp;
 };
 
 struct EventData {

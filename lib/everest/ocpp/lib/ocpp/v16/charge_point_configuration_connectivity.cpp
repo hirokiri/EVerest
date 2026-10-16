@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 - 2026 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 
 #include <everest/logging.hpp>
 #include <ocpp/common/websocket/websocket_uri.hpp>
@@ -143,6 +143,11 @@ void ChargePointConfigurationConnectivity::set_security_ctrl_security_profile(in
 void ChargePointConfigurationConnectivity::set_security_ctrl_identity(const std::string& /*identity*/,
                                                                       const std::string& /*source*/) {
     EVLOG_warning << "OCPP 1.6 does not support setting identity, ignoring";
+}
+
+void ChargePointConfigurationConnectivity::set_active_message_timeout(int32_t /*message_timeout_s*/,
+                                                                      const std::string& /*source*/) {
+    // OCPP 1.6 has no OCPPCommCtrlr.MessageTimeout to keep in sync.
 }
 
 } // namespace ocpp::v16

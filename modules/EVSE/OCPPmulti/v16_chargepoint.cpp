@@ -3,6 +3,8 @@
 
 #include "v16_chargepoint.hpp"
 
+#include <everest/ocpp_module_common/error_mapping.hpp>
+
 #include "charge_point_config_factory_v16.hpp"
 #include "ocpp_module_common_aliases.hpp"
 #include "v16_conversions.hpp"
@@ -26,14 +28,13 @@ namespace {
 constexpr const auto CENTRAL_CONTRACT_VALIDATION_ALLOWED_CONFIG_KEY = "CentralContractValidationAllowed";
 constexpr const auto CENTRAL_CONTRACT_VALIDATION_ALLOWED_COMPONENT = "ISO15118Ctrlr";
 constexpr const auto CENTRAL_CONTRACT_VALIDATION_ALLOWED_VARIABLE = "CentralContractValidationAllowed";
-constexpr const auto CONNECTION_TIMEOUT_CONFIG_KEY = "ConnectionTimeout";
+constexpr const auto CONNECTION_TIMEOUT_CONFIG_KEY = "ConnectionTimeOut";
 constexpr const auto CONNECTION_TIMEOUT_COMPONENT = "TxCtrlr";
 constexpr const auto CONNECTION_TIMEOUT_VARIABLE = "EVConnectionTimeOut";
 constexpr const auto ISO15118_PNC_ENABLED_CONFIG_KEY = "ISO15118PnCEnabled";
 constexpr const auto ISO15118_PNC_ENABLED_COMPONENT = "ISO15118Ctrlr";
 constexpr const auto ISO15118_PNC_ENABLED_VARIABLE = "PnCEnabled";
 
-constexpr const auto INOPERATIVE_ERROR_TYPE = "evse_manager/Inoperative";
 constexpr const auto SWITCHING_PHASES_REASON = "SwitchingPhases";
 constexpr const auto REPORT_SUSPENDED_EVSE_REASON_CHANGE_CONFIG_KEY = "ReportSuspendedEVSEReasonChange";
 
@@ -298,19 +299,20 @@ ocpp::v16::DataTransferResponse ChargePointV16::cb_tariff_message(const ocpp::Ta
     return response;
 }
 
-void ChargePointV16::cb_transaction_started(const std::int32_t ocpp_connector_id, const std::string& session_id) {
-    if (const auto evse = evse_from_ocpp_connector(ocpp_connector_id)) {
+void ChargePointV16::cb_transaction_started(const std::string& session_id,
+                                            const ocpp::v16::StartTransactionRequest& request) {
+    if (const auto evse = evse_from_ocpp_connector(request.connectorId)) {
         ocpp::v2::TransactionEventRequest event;
         event.eventType = ocpp::v2::TransactionEventEnum::Started;
         event.evse = {evse->evse_id, evse->connector_id};
         event.transactionInfo.transactionId = session_id;
         // the numeric OCPP1.6 transaction id is not assigned yet at this point
-        m_callbacks_ptr->cb_transaction_event(event, std::nullopt);
+        m_callbacks_ptr->cb_transaction_event(event, std::nullopt, request.timestamp);
     }
 }
 
-void ChargePointV16::cb_transaction_stopped(const std::int32_t ocpp_connector_id, const std::string& session_id,
-                                            const std::int32_t transaction_id) {
+void ChargePointV16::cb_transaction_stopped(const std::string& session_id, const std::int32_t ocpp_connector_id,
+                                            const ocpp::v16::StopTransactionRequest& request) {
     EVLOG_info << "Transaction stopped at OCPP1.6 connector: " << ocpp_connector_id << ", session_id: " << session_id;
     if (const auto evse = evse_from_ocpp_connector(ocpp_connector_id)) {
         ocpp::v2::TransactionEventRequest event;
@@ -318,31 +320,33 @@ void ChargePointV16::cb_transaction_stopped(const std::int32_t ocpp_connector_id
         event.evse = {evse->evse_id, evse->connector_id};
         event.transactionInfo.transactionId = session_id;
         // event.seqNo = 0; seqNo does not exist in OCPP1.6
-        m_callbacks_ptr->cb_transaction_event(event, std::to_string(transaction_id));
+        m_callbacks_ptr->cb_transaction_event(event, std::to_string(request.transactionId), request.timestamp);
     }
 }
 
-void ChargePointV16::cb_transaction_updated(const std::int32_t ocpp_connector_id, const std::string& session_id,
-                                            const std::int32_t transaction_id,
-                                            const ocpp::v16::IdTagInfo& id_tag_info) {
-    if (const auto evse = evse_from_ocpp_connector(ocpp_connector_id)) {
+void ChargePointV16::cb_transaction_updated(const std::string& session_id,
+                                            const ocpp::v16::StartTransactionRequest& request,
+                                            const ocpp::v16::StartTransactionResponse& response) {
+    if (const auto evse = evse_from_ocpp_connector(request.connectorId)) {
         ocpp::v2::TransactionEventRequest event;
         event.eventType = ocpp::v2::TransactionEventEnum::Updated;
         event.evse = {evse->evse_id, evse->connector_id};
         event.transactionInfo.transactionId = session_id;
         // event.seqNo = 0; seqNo does not exist in OCPP1.6
-        m_callbacks_ptr->cb_transaction_event(event, std::to_string(transaction_id));
+        // StartTransaction.conf carries no time of its own, the update happens when it is processed
+        m_callbacks_ptr->cb_transaction_event(event, std::to_string(response.transactionId), ocpp::DateTime());
 
         ocpp::v2::TransactionEventResponse event_response;
-        if (id_tag_info.parentIdTag) {
+        if (response.idTagInfo.parentIdTag) {
             ocpp::v2::IdTokenInfo token;
-            token.status = convert(id_tag_info.status);
-            token.cacheExpiryDateTime = id_tag_info.expiryDate;
-            token.groupIdToken = {static_cast<std::string>(id_tag_info.parentIdTag.value()), "ISO14443"};
+            token.status = convert(response.idTagInfo.status);
+            token.cacheExpiryDateTime = response.idTagInfo.expiryDate;
+            token.groupIdToken = {static_cast<std::string>(response.idTagInfo.parentIdTag.value()), "ISO14443"};
             event_response.idTokenInfo = token;
         }
 
-        m_callbacks_ptr->cb_transaction_event_response(event, event_response, std::to_string(transaction_id));
+        m_callbacks_ptr->cb_transaction_event_response(event, event_response, std::to_string(response.transactionId),
+                                                       request.timestamp);
     }
 }
 
@@ -386,6 +390,10 @@ ocpp::v16::GetLogResponse ChargePointV16::cb_upload_logs(ocpp::v16::GetLogReques
 }
 
 void ChargePointV16::cb_variable_listener(const ocpp::v16::KeyValue& key_value) {
+    // In ocpp::v16::ChargePoint a key-specific callback replaces the generic one; forward so other modules (e.g.
+    // EvseManager, Auth) still receive the change
+    cb_generic_configuration_key_changed(key_value);
+
     // copy under lock, invoke outside
     const listener_t listener = *m_variable_listener.handle();
     // fired key -> canonical CV
@@ -400,59 +408,10 @@ void ChargePointV16::cb_variable_listener(const ocpp::v16::KeyValue& key_value) 
 }
 
 ocpp::v16::ErrorInfo ChargePointV16::convert_error(const Everest::error::Error& error) {
-    const auto& error_type = error.type;
-
-    ocpp::v16::ErrorInfo result(error.uuid.uuid, ocpp::v16::ChargePointErrorCode::OtherError, false);
-    result.timestamp = ocpp::DateTime(error.timestamp);
-    bool incomplete{true};
-
-    // MREC mapping
-    const auto mrec_it =
-        std::find_if(ocpp_module_common::v16::MREC_ERROR_MAP.begin(), ocpp_module_common::v16::MREC_ERROR_MAP.end(),
-                     [error_type](const auto& entry) { return error_type.find(entry.first) != std::string::npos; });
-    if (mrec_it != ocpp_module_common::v16::MREC_ERROR_MAP.end()) {
-        const auto& [error_code, vendor_error_code] = mrec_it->second;
-        // update the result
-        result.error_code = error_code;
-        result.vendor_id = ocpp_module_common::v16::CHARGE_X_MREC_VENDOR_ID;
-        result.vendor_error_code = ocpp::CiString<50>(vendor_error_code, ocpp::StringTooLarge::Truncate);
-        incomplete = false;
-    }
-
-    // OCPP mapping
-    if (incomplete) {
-        const auto ocpp_it =
-            std::find_if(ocpp_module_common::v16::OCPP_ERROR_MAP.begin(), ocpp_module_common::v16::OCPP_ERROR_MAP.end(),
-                         [error_type](const auto& entry) { return error_type.find(entry.first) != std::string::npos; });
-
-        // is OCPP error
-        if (ocpp_it != ocpp_module_common::v16::OCPP_ERROR_MAP.end()) {
-            // update the result
-            result.error_code = ocpp_it->second;
-            incomplete = false;
-        }
-    }
-
-    if (incomplete) {
-        if (error_type == INOPERATIVE_ERROR_TYPE) {
-            // update the result
-            result.is_fault = true;
-            result.info = ocpp::CiString<50>("caused_by:" + error.message, ocpp::StringTooLarge::Truncate);
-            result.vendor_id = ocpp::CiString<255>(error.vendor_id, ocpp::StringTooLarge::Truncate);
-            result.vendor_error_code = ocpp::CiString<50>(error.description, ocpp::StringTooLarge::Truncate);
-            incomplete = false;
-        }
-    }
-
-    if (incomplete) {
-        // default processing
-        result.is_fault = default_is_fault(error);
-        result.info = ocpp::CiString<50>(error.origin.to_string(), ocpp::StringTooLarge::Truncate);
-        result.vendor_id = ocpp::CiString<255>(error.message, ocpp::StringTooLarge::Truncate);
-        result.vendor_error_code = ocpp::CiString<50>(default_vendor_error_code(error), ocpp::StringTooLarge::Truncate);
-    }
-
-    return result;
+    auto info = ocpp_module_common::to_v16_error_info(error);
+    // the configured mapping file only overrides single fields of the built-in result
+    const auto custom = m_callbacks_ptr->custom_error_mapping();
+    return custom != nullptr ? custom->overlay(error, std::move(info)) : info;
 }
 
 ocpp::v2::AuthorizeResponse ChargePointV16::validate_pnc(const types::authorization::ProvidedIdToken& provided_token) {
@@ -711,7 +670,7 @@ ChargePointV16::data_transfer_req(const ocpp::v2::DataTransferRequest& request) 
 
 std::optional<bool> ChargePointV16::get_central_contract_validation_allowed() {
     check_configured("get_central_contract_validation_allowed");
-    return get<bool>(*m_charge_point, "CentralContractValidationAllowed");
+    return get<bool>(*m_charge_point, CENTRAL_CONTRACT_VALIDATION_ALLOWED_VARIABLE);
 }
 
 std::optional<bool> ChargePointV16::get_contract_certificate_installation_enabled() {
@@ -720,12 +679,12 @@ std::optional<bool> ChargePointV16::get_contract_certificate_installation_enable
 
 std::optional<bool> ChargePointV16::get_pnc_enabled() {
     check_configured("get_pnc_enabled");
-    return get<bool>(*m_charge_point, "ISO15118PnCEnabled");
+    return get<bool>(*m_charge_point, ISO15118_PNC_ENABLED_CONFIG_KEY);
 }
 
 std::optional<std::int32_t> ChargePointV16::get_ev_connection_timeout() {
     check_configured("get_ev_connection_timeout");
-    return get<std::int32_t>(*m_charge_point, "ConnectionTimeout");
+    return get<std::int32_t>(*m_charge_point, CONNECTION_TIMEOUT_CONFIG_KEY);
 }
 
 std::optional<std::string> ChargePointV16::get_setpoint_priority() {
@@ -805,12 +764,18 @@ void ChargePointV16::on_der_republish_active_directives() {
 
 void ChargePointV16::on_event(const EventInfo& event) {
     check_configured("on_event");
+    dispatch_error_event(
+        event, [this](std::int32_t evse_id, const auto& info) { m_charge_point->on_error(evse_id, info); },
+        [this](std::int32_t evse_id, const auto& uuid) { m_charge_point->on_error_cleared(evse_id, uuid); });
+}
+
+void ChargePointV16::dispatch_error_event(const EventInfo& event, const error_raised_t& raised,
+                                          const error_cleared_t& cleared) {
     if (event.error) {
         if (event.event_cleared) {
-            m_charge_point->on_error_cleared(event.evse_id, event.error->uuid.uuid);
+            cleared(event.evse_id, event.error->uuid.uuid);
         } else {
-            const auto error_info = convert_error(event.error.value());
-            m_charge_point->on_error(event.evse_id, error_info);
+            raised(event.evse_id, convert_error(event.error.value()));
         }
     }
 }
@@ -1104,10 +1069,6 @@ ChargePointV16::validate_token(const types::authorization::ProvidedIdToken& prov
     return validation_result;
 }
 
-bool ChargePointV16::default_is_fault(const Everest::error::Error& error) {
-    return false;
-}
-
 std::optional<ocpp::CiString<50>>
 ChargePointV16::encode_pause_reasons(const std::optional<types::evse_manager::ChargingPausedEVSEReasons>& reasons) {
     if (!reasons.has_value()) {
@@ -1146,25 +1107,6 @@ ChargePointV16::encode_pause_reasons(const std::optional<types::evse_manager::Ch
     }
 
     return ocpp::CiString<50>{result, ocpp::StringTooLarge::Truncate};
-}
-
-std::string ChargePointV16::default_vendor_error_code(const Everest::error::Error& error) {
-    std::string result;
-
-    // this function should return everything after the first '/'
-    // delimiter - if there is no delimiter or the delimiter is at
-    // the end, it should return the input itself
-
-    auto npos = error.type.find('/');
-    if (npos == std::string::npos) {
-        result = error.type;
-    } else {
-        result = error.type.substr(npos + 1);
-    }
-
-    result.push_back('/');
-    result += error.sub_type;
-    return result;
 }
 
 } // namespace ocpp_multi

@@ -11,16 +11,23 @@ function(create_states_test_target NAME)
 endfunction()
 
 create_states_test_target(ac_charge_loop)
+create_states_test_target(ac_der_sae_charge_loop)
+create_states_test_target(ac_der_sae_charge_parameter_discovery)
 create_states_test_target(ac_charge_parameter_discovery)
 create_states_test_target(authorization_setup)
 create_states_test_target(authorization)
 create_states_test_target(service_discovery)
 create_states_test_target(service_selection)
 create_states_test_target(dc_charge_parameter_discovery)
-create_states_test_target(schedule_exchange)
 create_states_test_target(dc_cable_check)
 create_states_test_target(dc_pre_charge)
 create_states_test_target(power_delivery)
 create_states_test_target(dc_charge_loop)
 create_states_test_target(dc_welding_detection)
 create_states_test_target(session_stop)
+
+# DIN SPEC 70121 SECC per-state handler tests
+add_subdirectory(din)
+
+# ISO 15118-2 SECC per-state handler tests
+add_subdirectory(iso2)

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 - 2026 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 #include "charge_bridge/charge_bridge.hpp"
 #include "charge_bridge/status_ui.hpp"
 #include "charge_bridge/utilities/string.hpp"
@@ -48,7 +48,7 @@ mode parse_args(int argc, char* argv[], std::vector<std::string>& config_files,
                      "                    no status dashboard is started (--status-output is ignored, no TTY is\n"
                      "                    required), progress goes to stdout and the exit status reports whether\n"
                      "                    every configured instance was updated: a discovery endpoint\n"
-                     "                    (ip: ANY_EVSE / ANY_EV) is resolved by a single bounded mDNS discovery\n"
+                     "                    (ip: ANY_EVSE / ANY_EV / ANY) is resolved by a single bounded mDNS discovery\n"
                      "                    first, and an instance that is not reached or not updated fails the run\n";
         std::cout << "--status-output=auto|log|terminal|off\n"
                      "                    output mode for charge_bridge status output.\n"
@@ -187,7 +187,7 @@ constexpr auto update_only_discovery_timeout = std::chrono::seconds(10);
 constexpr auto update_only_discovery_poll_interval = std::chrono::milliseconds(100);
 
 // mDNS spelling of a config's `ip:` field. Mirrors parse_endpoint_intent()/make_interface_list() in
-// charge_bridge.cpp (both are file-local there): "ANY_EVSE"/"ANY_EV" pick the device type, an
+// charge_bridge.cpp (both are file-local there): "ANY_EVSE"/"ANY_EV"/"ANY" pick the device type, an
 // optional suffix restricts the interfaces to search ("ANY_EVSE(eth0,eth1)") or excludes them
 // ("ANY_EVSE(!wlan0)"). Only --update_only needs the intent here, because it resolves the endpoint
 // itself; every other mode gets it from charge_bridge::manage(). Keep the two in sync.
@@ -198,21 +198,22 @@ struct mdns_endpoint {
 };
 
 std::optional<mdns_endpoint> parse_mdns_endpoint(std::string const& cb_remote) {
-    mdns_endpoint result;
-    std::string pattern;
-    if (utilities::string_starts_with(cb_remote, "ANY_EVSE")) {
-        result.type = discovery_device_type::CB_EVSE;
-        pattern = "ANY_EVSE";
-    } else if (utilities::string_starts_with(cb_remote, "ANY_EV")) {
-        result.type = discovery_device_type::CB_EV;
-        pattern = "ANY_EV";
-    } else {
+    auto const pattern = utilities::discovery_sentinel(cb_remote);
+    if (not pattern.has_value()) {
         return std::nullopt;
+    }
+    mdns_endpoint result;
+    if (*pattern == "ANY_EVSE") {
+        result.type = discovery_device_type::CB_EVSE;
+    } else if (*pattern == "ANY_EV") {
+        result.type = discovery_device_type::CB_EV;
+    } else {
+        result.type = discovery_device_type::CB_ANY;
     }
 
     // "ANY_EVSE(...)": strip the enclosing parentheses, then an optional leading '!' marks the list
     // as excluding. Anything not carrying a "(...)" list means: search all interfaces.
-    auto const raw = utilities::string_after_pattern(cb_remote, pattern);
+    auto const raw = utilities::string_after_pattern(cb_remote, *pattern);
     if (raw.size() >= 3 && raw.front() == '(' && raw.back() == ')') {
         auto const list = raw.substr(1, raw.size() - 2);
         result.excluding = list.front() == '!';
@@ -275,7 +276,7 @@ std::optional<std::string> discover_update_endpoint(std::string const& cb_name, 
     return discovered_ip;
 }
 
-// Replaces a discovery endpoint (ip: ANY_EVSE / ANY_EV) by the address of the device that answers.
+// Replaces a discovery endpoint (ip: ANY_EVSE / ANY_EV / ANY) by the address of the device that answers.
 // Fixed-IP configs are left untouched and always succeed here.
 bool resolve_update_endpoint(charge_bridge_config& config) {
     auto const endpoint = parse_mdns_endpoint(config.cb_remote);
@@ -456,6 +457,23 @@ int main(int argc, char* argv[]) {
         auto force_update = mode_of_operation == mode::update;
         cb->manage(ev_handler, g_run_application, force_update);
     }
+
+    // Event loop lag watchdog: a 1 s timer that fires late by more than loop_lag_warn means the loop
+    // thread was blocked for that long (a dispatch, a blocking call). Silent otherwise.
+    static constexpr auto loop_watchdog_period = std::chrono::seconds(1);
+    static constexpr auto loop_lag_warn = std::chrono::milliseconds(500);
+    everest::lib::io::event::timer_fd loop_watchdog;
+    auto loop_watchdog_expected = std::chrono::steady_clock::now() + loop_watchdog_period;
+    ev_handler.register_event_handler(&loop_watchdog, [&loop_watchdog_expected]() {
+        auto const now = std::chrono::steady_clock::now();
+        auto const lag = std::chrono::duration_cast<std::chrono::milliseconds>(now - loop_watchdog_expected);
+        if (lag > loop_lag_warn) {
+            utilities::print_error("host", "LOOP", -1)
+                << "event loop stalled for " << lag.count() << " ms" << std::endl;
+        }
+        loop_watchdog_expected = now + loop_watchdog_period;
+    });
+    loop_watchdog.set_timeout(loop_watchdog_period);
 
     ev_handler.run(g_run_application);
     // Stop the UI first: it owns the terminal (ftxui alternate screen), and destroying the bridges

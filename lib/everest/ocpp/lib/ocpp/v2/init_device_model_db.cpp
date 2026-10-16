@@ -17,6 +17,9 @@ const static std::string STANDARDIZED_COMPONENT_CONFIG_DIR = "standardized";
 const static std::string CUSTOM_COMPONENT_CONFIG_DIR = "custom";
 const static std::string OCPP16_LEGACY_CTRLR_COMPONENT_CONFIG = "OCPP16LegacyCtrlr";
 const static std::string DEFAULT_SOURCE = "default";
+// An attribute is persistent and not constant unless its component config says otherwise.
+constexpr bool DEFAULT_PERSISTENT = true;
+constexpr bool DEFAULT_CONSTANT = false;
 
 using namespace everest::db;
 using namespace everest::db::sqlite;
@@ -120,9 +123,9 @@ void InitDeviceModelDb::initialize_database(
         existing_components = get_all_components_from_db();
     }
 
-    // If OCPP16LegacyCtrlr is not present in the config files nor the database, add the built-in default config for it.
-    // This ensures the OCPP 1.6 device model bridge works even with a custom DeviceModelConfigPath that does not
-    // include the file.
+    // If OCPP16LegacyCtrlr is not present in the config files, add the built-in default config for it so the
+    // component is inserted and kept up to date like any other component. This keeps the OCPP 1.6 device model
+    // bridge working with a custom DeviceModelConfigPath that does not include the file.
     const bool config_files_contain_ocpp16_legacy_ctrlr =
         std::any_of(component_configs.begin(), component_configs.end(),
                     [](const auto& c) { return c.first.name == OCPP16_LEGACY_CTRLR_COMPONENT_CONFIG; });
@@ -130,34 +133,27 @@ void InitDeviceModelDb::initialize_database(
         std::any_of(existing_components.begin(), existing_components.end(),
                     [](const auto& c) { return c.first.name == OCPP16_LEGACY_CTRLR_COMPONENT_CONFIG; });
 
+    // Only allocate an augmented copy when the fallback component is actually missing from the config.
+    std::optional<std::map<ComponentKey, std::vector<DeviceModelVariable>>> augmented;
+    if (inject_ocpp16_legacy_ctrlr_fallback && !config_files_contain_ocpp16_legacy_ctrlr) {
+        if (!db_contains_ocpp16_legacy_ctrlr) {
+            EVLOG_warning
+                << "OCPP16LegacyCtrlr not found in component config directory or database, using built-in defaults";
+        }
+        augmented = component_configs;
+        ensure_ocpp16_legacy_ctrlr(*augmented);
+    }
+
+    const auto& configs = augmented.has_value() ? *augmented : component_configs;
+
     // Components in the database that no longer have a matching entry in the component
     // config (e.g. NetworkConfiguration_<N>.json was removed from the install) are kept
     // in place and reported via a warning. Pruning these rows used to drop migration
     // targets, so the operator could end up with a populated NetworkConnectionProfiles
     // blob and no per-slot components to migrate it into.
     if (this->database_exists) {
-        warn_about_components_missing_from_config(component_configs, existing_components);
+        warn_about_components_missing_from_config(configs, existing_components);
     }
-
-    // Only allocate an augmented copy when the fallback component is actually missing.
-    std::optional<std::map<ComponentKey, std::vector<DeviceModelVariable>>> augmented;
-    if (inject_ocpp16_legacy_ctrlr_fallback && !config_files_contain_ocpp16_legacy_ctrlr &&
-        !db_contains_ocpp16_legacy_ctrlr) {
-        EVLOG_warning
-            << "OCPP16LegacyCtrlr not found in component config directory or database, using built-in defaults";
-        try {
-            const json fallback_json = json::parse(get_default_ocpp16_legacy_ctrlr_schema());
-            const ComponentKey key = fallback_json;
-            const std::vector<DeviceModelVariable> variables =
-                get_all_component_properties(fallback_json.at("properties"));
-            augmented = component_configs;
-            augmented->insert({key, variables});
-        } catch (const json::parse_error& e) {
-            EVLOG_error << "Failed to parse built-in OCPP16LegacyCtrlr fallback: " << e.what();
-        }
-    }
-
-    const auto& configs = augmented.has_value() ? *augmented : component_configs;
 
     // Check if the config is consistent.
     check_integrity(configs);
@@ -617,8 +613,8 @@ void InitDeviceModelDb::insert_attribute(const VariableAttribute& attribute, con
     }
 
     insert_attributes_statement->bind_int("@variable_id", static_cast<int>(variable_id));
-    insert_attributes_statement->bind_int("@persistent", 1);
-    insert_attributes_statement->bind_int("@constant", 0);
+    insert_attributes_statement->bind_int("@persistent", attribute.persistent.value_or(DEFAULT_PERSISTENT) ? 1 : 0);
+    insert_attributes_statement->bind_int("@constant", attribute.constant.value_or(DEFAULT_CONSTANT) ? 1 : 0);
 
     if (attribute.mutability.has_value()) {
         insert_attributes_statement->bind_int("@mutability_id", static_cast<int>(attribute.mutability.value()));
@@ -715,23 +711,8 @@ void InitDeviceModelDb::update_attribute(const VariableAttribute& attribute, con
         update_statement->bind_null("@mutability_id");
     }
 
-    if (attribute.persistent.has_value()) {
-        update_statement->bind_int("@persistent", (attribute.persistent.value() ? 1 : 0));
-    } else if (db_attribute.variable_attribute.persistent.has_value()) {
-        update_statement->bind_int("@persistent", (db_attribute.variable_attribute.persistent.value() ? 1 : 0));
-    } else {
-        // Set default value.
-        update_statement->bind_int("@persistent", 1);
-    }
-
-    if (attribute.constant.has_value()) {
-        update_statement->bind_int("@constant", (attribute.constant.value() ? 1 : 0));
-    } else if (db_attribute.variable_attribute.constant.has_value()) {
-        update_statement->bind_int("@constant", (db_attribute.variable_attribute.constant.value() ? 1 : 0));
-    } else {
-        // Set default value.
-        update_statement->bind_int("@constant", 0);
-    }
+    update_statement->bind_int("@persistent", attribute.persistent.value_or(DEFAULT_PERSISTENT) ? 1 : 0);
+    update_statement->bind_int("@constant", attribute.constant.value_or(DEFAULT_CONSTANT) ? 1 : 0);
 
     if (attribute.type.has_value()) {
         update_statement->bind_int("@type_id", static_cast<int>(attribute.type.value()));
@@ -1534,13 +1515,10 @@ bool is_same_attribute_type(const VariableAttribute attribute1, const VariableAt
 /// @return True if characteristics of attribute are the same.
 ///
 bool is_attribute_different(const VariableAttribute& attribute1, const VariableAttribute& attribute2) {
-    // Constant and persistent are currently not set in the json file.
-    if ((attribute1.type == attribute2.type) && /*(attribute1.constant == attribute2.constant) &&*/
-        (attribute1.mutability == attribute2.mutability) && (attribute1.value == attribute2.value)
-        /* && (attribute1.persistent == attribute2.persistent)*/) {
-        return false;
-    }
-    return true;
+    return attribute1.type != attribute2.type or attribute1.mutability != attribute2.mutability or
+           attribute1.value != attribute2.value or
+           attribute1.persistent.value_or(DEFAULT_PERSISTENT) != attribute2.persistent.value_or(DEFAULT_PERSISTENT) or
+           attribute1.constant.value_or(DEFAULT_CONSTANT) != attribute2.constant.value_or(DEFAULT_CONSTANT);
 }
 
 ///

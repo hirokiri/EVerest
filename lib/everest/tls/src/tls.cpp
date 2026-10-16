@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2024 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 
 #include "extensions/status_request.hpp"
 #include "extensions/trusted_ca_keys.hpp"
@@ -1063,6 +1063,27 @@ bool Server::init_socket(const config_t& cfg) {
     return result;
 }
 
+std::uint16_t Server::bound_port() const {
+    if (m_socket == INVALID_SOCKET) {
+        return 0;
+    }
+
+    sockaddr_storage addr{};
+    socklen_t addr_len = sizeof(addr);
+    if (::getsockname(m_socket, reinterpret_cast<sockaddr*>(&addr), &addr_len) != 0) {
+        return 0;
+    }
+
+    switch (addr.ss_family) {
+    case AF_INET:
+        return ntohs(reinterpret_cast<const sockaddr_in*>(&addr)->sin_port);
+    case AF_INET6:
+        return ntohs(reinterpret_cast<const sockaddr_in6*>(&addr)->sin6_port);
+    default:
+        return 0;
+    }
+}
+
 int Server::handle_tls_1_3_verify_upgrade(SSL* ssl, int* /*alert*/) {
     // The verify upgrade only takes effect when the negotiated protocol will be
     // TLS 1.3. Both sides must allow it: the client must advertise TLS 1.3 in
@@ -1118,9 +1139,11 @@ bool Server::init_ssl(const config_t& cfg) {
     SSL_CTX* ctx = nullptr;
 
     if (result) {
-        // use the first server chain
+        // Default chain served to a peer that matches none: the first chain that passed
+        // verification. Reached only when cfg.chains is non-empty (see `result` above).
+        const auto default_index = (m_default_chain_index < cfg.chains.size()) ? m_default_chain_index : 0;
         const ssl_ctx_params params{true, cfg.ciphersuites, cfg.cipher_list, true, cfg.enforce_tls_1_3};
-        result = configure_ssl_ctx(ctx, cfg.chains[0], params);
+        result = configure_ssl_ctx(ctx, cfg.chains[default_index], params);
         if (result) {
 
             if (cfg.tls_key_logging) {
@@ -1172,10 +1195,13 @@ void Server::deinit_ssl() {
     m_context = std::make_unique<server_ctx>();
 }
 
-bool Server::init_certificates(const std::vector<certificate_config_t>& chain_files) {
+void Server::init_certificates(const std::vector<certificate_config_t>& chain_files) {
     std::vector<OcspCache::ocsp_entry_t> entries;
     openssl::chain_list chains;
+    m_default_chain_index = 0;
+    bool any_trust_anchors{false};
 
+    std::size_t config_index{0};
     for (const auto& i : chain_files) {
         auto certs = openssl::load_certificates(i.certificate_chain_file);
         auto tas = openssl::load_certificates(i.trust_anchor_file);
@@ -1205,26 +1231,55 @@ bool Server::init_certificates(const std::vector<certificate_config_t>& chain_fi
                 log_warning("<n> certificates != <n> OCSP responses");
             }
 
+            switch (i.tls_version) {
+            case TlsVersion::tls_1_2:
+                chain.tls_version = TLS1_2_VERSION;
+                break;
+            case TlsVersion::tls_1_3:
+                chain.tls_version = TLS1_3_VERSION;
+                break;
+            case TlsVersion::any:
+            default:
+                chain.tls_version = 0;
+                break;
+            }
+
             /*
              * If there are no trust anchors then the chain can't be verified
-             * it also means that trusted_ca_keys can't be supported for the
-             * chain.
+             * and trusted_ca_keys can't match it (matching is on the anchors).
+             * The chain is still kept so that it can be selected by the
+             * negotiated TLS version.
              */
+
+            chain.chain.leaf = std::move(certs[0]);
+            // remove server cert from intermediate list
+            certs.erase(certs.begin());
+            chain.chain.chain = std::move(certs);
+            chain.private_key = std::move(pkey);
 
             if (!tas.empty()) {
                 // update trusted CA keys information
-                chain.chain.leaf = std::move(certs[0]);
-                // remove server cert from intermediate list
-                certs.erase(certs.begin());
-                chain.chain.chain = std::move(certs);
                 chain.chain.trust_anchors = std::move(tas);
-                chain.private_key = std::move(pkey);
-
                 if (openssl::verify_chain(chain)) {
+                    if (chains.empty()) {
+                        m_default_chain_index = config_index;
+                    }
+                    any_trust_anchors = true;
                     chains.emplace_back(std::move(chain));
+                } else {
+                    const auto subject = openssl::certificate_subject(chain.chain.leaf.get());
+                    std::string msg("chain verification failed, excluding chain (leaf:");
+                    for (const auto& item : subject) {
+                        msg += ' ';
+                        msg += item.first;
+                        msg += ':';
+                        msg += item.second;
+                    }
+                    msg += ')';
+                    log_warning(msg);
                 }
             } else {
-                const auto subject = openssl::certificate_subject(certs[0].get());
+                const auto subject = openssl::certificate_subject(chain.chain.leaf.get());
                 std::string msg("No trust anchors for certificate:");
                 for (const auto& item : subject) {
                     msg += ' ';
@@ -1233,29 +1288,42 @@ bool Server::init_certificates(const std::vector<certificate_config_t>& chain_fi
                     msg += item.second;
                 }
                 log_warning(msg);
+                chains.emplace_back(std::move(chain));
             }
+        } else {
+            const auto* file = static_cast<const char*>(i.certificate_chain_file);
+            std::string msg("certificate chain file yielded no certificates: ");
+            msg += (file != nullptr) ? file : "<not set>";
+            log_warning(msg);
         }
+        config_index++;
     }
 
-    bool result{true};
-
-    if (chains.empty()) {
+    if (!any_trust_anchors) {
         // continue without trusted_ca_keys support
         log_warning("trusted_ca_keys support disabled");
+        if (!chain_files.empty()) {
+            log_warning("no configured chain passed verification; the SSL_CTX default certificate remains "
+                        "chains[0] and clients may not be able to build a path for it");
+        }
+    } else if (m_default_chain_index != 0) {
+        std::string msg("first ");
+        msg += std::to_string(m_default_chain_index);
+        msg += " configured chain(s) unusable (see warnings above); serving chains[";
+        msg += std::to_string(m_default_chain_index);
+        msg += "] as the default certificate";
+        log_warning(msg);
     }
     m_server_trusted_ca_keys.update(std::move(chains));
 
-    // don't error when there are no OCSP cached responses
-    if (!entries.empty()) {
-        if (!m_cache.load(entries)) {
-            result = false;
-        }
-    } else {
-        // remove any existing entries
-        (void)m_cache.load(entries);
+    // A response that cannot be loaded only costs the stapling for its
+    // certificate: the responses that did load are kept and the server still
+    // comes up, since a stale or corrupt cache file must not take TLS down.
+    // Without entries the cache is cleared.
+    if (!m_cache.load(entries)) {
+        log_warning("one or more OCSP responses could not be loaded; the affected certificates are served "
+                    "without OCSP stapling");
     }
-
-    return result;
 }
 
 void Server::deinit_certificates() {
@@ -1390,10 +1458,8 @@ bool Server::update(const config_t& cfg) {
 
     m_timeout_ms = cfg.io_timeout_ms;
     // always try init_certificates() and init_ssl()
-    bool result = init_certificates(cfg.chains);
-    if (!init_ssl(cfg)) {
-        result = false;
-    }
+    init_certificates(cfg.chains);
+    const bool result = init_ssl(cfg);
     m_state = (result) ? state_t::init_complete : state_t::init_socket;
     return result;
 }

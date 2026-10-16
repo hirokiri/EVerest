@@ -36,7 +36,8 @@ struct MessageWithQOS : Message {
 };
 
 ///
-/// \brief Contains a C++ abstraction of MQTT-C and some convenience functionality for using MQTT in EVerest modules
+/// \brief Contains a C++ abstraction of the everest::io MQTT client and some convenience functionality for using MQTT
+/// in EVerest modules
 ///
 class MQTTAbstractionImpl : public MQTTAbstraction {
 public:
@@ -51,9 +52,11 @@ public:
     void disconnect() override;
     void stop_message_handling() override;
     void publish(const std::string& topic, const nlohmann::json& json) override;
-    void publish(const std::string& topic, const nlohmann::json& json, QOS qos, bool retain = false) override;
+    void publish(const std::string& topic, const nlohmann::json& json, QOS qos, bool retain = false,
+                 bool record_retained = true) override;
     void publish(const std::string& topic, const std::string& data) override;
-    void publish(const std::string& topic, const std::string& data, QOS qos, bool retain = false) override;
+    void publish(const std::string& topic, const std::string& data, QOS qos, bool retain = false,
+                 bool record_retained = true) override;
     void subscribe(const std::string& topic) override;
     void subscribe(const std::string& topic, QOS qos) override;
     void unsubscribe(const std::string& topic) override;

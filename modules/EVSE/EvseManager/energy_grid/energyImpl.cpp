@@ -2,15 +2,17 @@
 // Copyright Pionix GmbH and Contributors to EVerest
 
 #include "energyImpl.hpp"
+#include "random_delay/random_delay_duration.hpp"
 
 #include <everest/helpers/phase_rotation.hpp>
+#include <everest/util/misc/container.hpp>
 
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <date/date.h>
 #include <date/tz.h>
-#include <fmt/core.h>
+#include <fmt/format.h>
 #include <string>
 #include <utils/date.hpp>
 #include <utils/formatter.hpp>
@@ -142,6 +144,31 @@ void energyImpl::ready() {
             request_energy_thread.detach();
         }
     });
+
+    mod->charger->signal_charging_paused_evse_event.connect(
+        [this](const types::evse_manager::ChargingPausedEVSEReasons& paused) {
+            using types::evse_manager::PauseChargingEVSEReasonEnum;
+            paused_by_user_or_error = everest::lib::util::exists_any(
+                paused.reasons, PauseChargingEVSEReasonEnum::UserPause, PauseChargingEVSEReasonEnum::Error);
+        });
+}
+
+bool energyImpl::should_request_energy() const {
+    if (not mod->config.request_zero_power_in_idle) {
+        return true;
+    }
+    switch (charger_state) {
+    case Charger::EvseState::Charging:
+    case Charger::EvseState::PrepareCharging:
+    case Charger::EvseState::WaitingForAuthentication:
+    case Charger::EvseState::ChargingPausedEV:
+        return true;
+    case Charger::EvseState::ChargingPausedEVSE:
+        // a pause for missing energy alone keeps requesting so that charging can resume
+        return not paused_by_user_or_error;
+    default:
+        return false;
+    }
 }
 
 types::energy::EvseState to_energy_evse_state(const Charger::EvseState charger_state) {
@@ -179,6 +206,9 @@ types::energy::EvseState to_energy_evse_state(const Charger::EvseState charger_s
     case Charger::EvseState::T_step_X1:
         return types::energy::EvseState::PrepareCharging;
         break;
+    case Charger::EvseState::Reinit:
+        return types::energy::EvseState::PrepareCharging;
+        break;
     case Charger::EvseState::SwitchPhases:
         return types::energy::EvseState::Charging;
         break;
@@ -192,9 +222,7 @@ void energyImpl::request_energy_from_energy_manager(bool priority_request) {
     clear_export_request_schedule();
 
     // If we need energy, copy local limit schedules to energy_flow_request.
-    if (charger_state == Charger::EvseState::Charging || charger_state == Charger::EvseState::PrepareCharging ||
-        charger_state == Charger::EvseState::WaitingForAuthentication ||
-        charger_state == Charger::EvseState::ChargingPausedEV || !mod->config.request_zero_power_in_idle) {
+    if (should_request_energy()) {
 
         // copy complete external limit schedules for import
         if (not mod->get_local_energy_limits().schedule_import.empty()) {
@@ -468,9 +496,9 @@ void energyImpl::handle_enforce_limits(types::energy::EnforcedLimits& value) {
             if (not mod->random_delay_running and random_delay_needed(last_enforced_limit, limit)) {
                 mod->random_delay_running = true;
                 mod->random_delay_start_time = date::utc_clock::now();
-                auto random_delay_s = std::rand() % mod->random_delay_max_duration.load().count();
-                mod->random_delay_end_time = std::chrono::steady_clock::now() + std::chrono::seconds(random_delay_s);
-                EVLOG_info << "UK Smart Charging regulations: Starting random delay of " << random_delay_s << "s";
+                const auto random_delay = random_delay_duration(mod->random_delay_max_duration.load(), std::rand());
+                mod->random_delay_end_time = std::chrono::steady_clock::now() + random_delay;
+                EVLOG_info << "UK Smart Charging regulations: Starting random delay of " << random_delay.count() << "s";
                 limit_when_random_delay_started = last_enforced_limit;
             }
 

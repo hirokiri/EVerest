@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 - 2026 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 #include "c4/yml/node.hpp"
 #include <charge_bridge/utilities/parse_config.hpp>
 #include <charge_bridge/utilities/string.hpp>
@@ -37,10 +37,10 @@ std::string print_yaml_location(ryml::Location const& loc) {
             error_msg << tmp;
         }
         error_msg << "\n  line " << loc.line;
-        if (loc.col) {
+        if (loc.col and loc.col != ryml::npos) {
             error_msg << " column " << loc.col;
         }
-        if (loc.offset) {
+        if (loc.offset and loc.offset != ryml::npos) {
             error_msg << " offset " << loc.offset << "B";
         }
         error_msg << "\n";
@@ -48,14 +48,27 @@ std::string print_yaml_location(ryml::Location const& loc) {
     return error_msg.str();
 }
 
-void yaml_error_handler(const char* msg, std::size_t len, ryml::Location loc, void*) {
+[[noreturn]] void throw_yaml_error(c4::csubstr msg, const ryml::Location& loc) {
     std::stringstream error_msg;
     error_msg << "YAML parsing error: ";
     error_msg << print_yaml_location(loc);
-    error_msg.write(msg, len);
+    error_msg.write(msg.str, static_cast<std::streamsize>(msg.len));
 
     std::cerr << error_msg.str() << std::endl;
     throw std::runtime_error(error_msg.str());
+}
+
+[[noreturn]] void yaml_error_basic(c4::csubstr msg, const ryml::ErrorDataBasic& err, void*) {
+    throw_yaml_error(msg, err.location);
+}
+
+[[noreturn]] void yaml_error_parse(c4::csubstr msg, const ryml::ErrorDataParse& err, void*) {
+    // ymlloc refers to the parsed document, cpploc to ryml's own sources
+    throw_yaml_error(msg, err.ymlloc);
+}
+
+[[noreturn]] void yaml_error_visit(c4::csubstr msg, const ryml::ErrorDataVisit& err, void*) {
+    throw_yaml_error(msg, err.cpploc);
 }
 
 void print_location(ryml::ConstNodeRef node, ryml::Parser& parser) {
@@ -122,7 +135,10 @@ bool get_node_impl(c4::yml::ConstNodeRef node, ryml::Parser& parser, std::string
 
 struct RymlCallbackInitializer {
     RymlCallbackInitializer() {
-        ryml::set_callbacks({nullptr, nullptr, nullptr, yaml_error_handler});
+        // ryml >= 0.11 replaced the single error callback with one per error kind
+        ryml::Callbacks callbacks;
+        callbacks.set_error_basic(yaml_error_basic).set_error_parse(yaml_error_parse).set_error_visit(yaml_error_visit);
+        ryml::set_callbacks(callbacks);
     }
 };
 
@@ -169,15 +185,72 @@ void parse_config_impl(c4::yml::NodeRef& config, charge_bridge_config& c, std::f
         }
     };
 
+    // True when the key exists at all, which is what tells a configured value from an absent one:
+    // get_node_or_default cannot, because it hands back the fallback either way.
+    auto has_node = [&config](std::string const& main, std::string const& sub = "") {
+        auto [node_str, node] = find_node(config, main, sub);
+        (void)node_str;
+        return not node.invalid();
+    };
+
+    // Like get_node_or_default, except that a key which IS present must decode: get_node_or_default
+    // swallows a decode failure and hands back the fallback, which turns a broken value (a map or a
+    // sequence where a scalar belongs) into a silent default. Present-but-undecodable is a broken
+    // config, not an absent one.
+    auto get_node_if_present = [&get_node, &has_node](auto& data, std::string const& main, std::string const& sub,
+                                                      auto fallback) {
+        if (has_node(main, sub)) {
+            get_node(data, main, sub);
+        } else {
+            data = fallback;
+        }
+    };
+
     get_node(c.cb_name, "charge_bridge", "name");
     get_node(c.cb_remote, "charge_bridge", "ip");
-    // accept the bracketed IPv6 spelling ("[fd00::1]"); sentinels (ANY_EVSE/ANY_EV)
+
+    // accept the bracketed IPv6 spelling ("[fd00::1]"); sentinels (ANY_EVSE/ANY_EV/ANY)
     // and everything else pass through unchanged. Normalized here, before cb_remote
     // is copied into the per-bridge configs below.
-    if (not string_starts_with(c.cb_remote, "ANY_EV")) {
+    if (auto const sentinel = discovery_sentinel(c.cb_remote)) {
+        // "ANY_EVSE(eth0,eth1)", "ANY_EVSE(!wlan0)"
+        auto const suffix = string_after_pattern(c.cb_remote, *sentinel);
+        auto const is_list = suffix.size() >= 3 && suffix.front() == '(' && suffix.back() == ')';
+        if (not suffix.empty() && not is_list) {
+            std::cerr << "Configuration error: charge_bridge::ip '" << c.cb_remote
+                      << "' is not a valid discovery endpoint; expected ANY_EVSE, ANY_EV or ANY, optionally "
+                         "followed by an interface list in parentheses, e.g. ANY_EVSE(eth0) or ANY_EV(!wlan0)"
+                      << std::endl;
+            throw std::runtime_error("");
+        }
+    } else {
         c.cb_remote = strip_brackets(c.cb_remote);
     }
     c.cb_port = g_cb_port_management;
+
+    // Optional: the role this ChargeBridge plays. An absent key stays absent all the way to the MCU
+    // rather than being turned into EVSE - a config that never mentions a role is not claiming to be
+    // an EVSE, and on a strapping-coded CCS board that distinction is what keeps a correctly
+    // configured EV station from raising a permanent role alarm. Read before the blocks below because
+    // it derives the plc.station_id default.
+    if (has_node("charge_bridge", "type")) {
+        // get_node, not get_node_or_default: a key that is present but cannot be decoded (a map or a
+        // sequence where a string belongs) is a broken config, not an absent one, and must not fall
+        // back to a silent default.
+        std::string type;
+        get_node(type, "charge_bridge", "type");
+        if (type == "EVSE") {
+            c.type = cb_role::evse;
+        } else if (type == "EV") {
+            c.type = cb_role::ev;
+        } else {
+            std::cerr << "Configuration error: charge_bridge::type must be 'EVSE' or 'EV', got '" << type << "'"
+                      << std::endl;
+            throw std::runtime_error("");
+        }
+    } else {
+        c.type = cb_role::unspecified;
+    }
 
     get_block("telemetry", c.telemetry, [&](auto& cfg, auto const& main) {
         get_node(cfg.mqtt_remote, main, "mqtt_remote");
@@ -219,17 +292,65 @@ void parse_config_impl(c4::yml::NodeRef& config, charge_bridge_config& c, std::f
         get_node(cfg.plc_mtu, main, "mtu");
         cfg.cb_port = g_cb_port_plc;
         cfg.cb_remote = c.cb_remote;
+
+        // Optional: how the tap device's carrier is driven. "none" (the default) never issues
+        // TUNSETCARRIER, which is today's behavior and the only correct setting for HomePlug - SLAC
+        // MMEs must cross the tap before any link exists. "firmware" mirrors the MCU's reported SPE
+        // PHY state onto the carrier (MCS) and opts the MCU into sending link-status reports.
+        std::string carrier;
+        get_node_if_present(carrier, main, "carrier", std::string("none"));
+        if (carrier == "none") {
+            cfg.carrier = carrier_mode::none;
+        } else if (carrier == "firmware") {
+            cfg.carrier = carrier_mode::firmware;
+        } else {
+            std::cerr << "Configuration error: plc::carrier must be 'none' or 'firmware', got '" << carrier << "'"
+                      << std::endl;
+            throw std::runtime_error("");
+        }
+
+        // Optional: what to do when the kernel has no TUNSETCARRIER (pre-5.0) in "firmware" mode.
+        // "fail" (the default) refuses to start the plc bridge, "warn" keeps bridging with the
+        // carrier permanently on and degraded supervision. Ignored in "none" mode.
+        std::string fallback;
+        get_node_if_present(fallback, main, "carrier_fallback", std::string("fail"));
+        if (fallback == "fail") {
+            cfg.carrier_fallback_policy = carrier_fallback::fail;
+        } else if (fallback == "warn") {
+            cfg.carrier_fallback_policy = carrier_fallback::warn;
+        } else {
+            std::cerr << "Configuration error: plc::carrier_fallback must be 'fail' or 'warn', got '" << fallback << "'"
+                      << std::endl;
+            throw std::runtime_error("");
+        }
+
+        // Optional: additionally gate the carrier on basic-signalling state. "none" (the default)
+        // keeps carrier: firmware's PHY-only rule. "ce_mated" holds the carrier down unless the BSP
+        // status reports a mated CE state, so the netdev's link exists exactly while a vehicle is
+        // physically present. Requires "firmware" mode and a BSP block (validated below).
+        std::string gate;
+        get_node_if_present(gate, main, "carrier_gate", std::string("none"));
+        if (gate == "none") {
+            cfg.gate = carrier_gate::none;
+        } else if (gate == "ce_mated") {
+            cfg.gate = carrier_gate::ce_mated;
+        } else {
+            std::cerr << "Configuration error: plc::carrier_gate must be 'none' or 'ce_mated', got '" << gate << "'"
+                      << std::endl;
+            throw std::runtime_error("");
+        }
     });
 
-    {
-        bool wants_ev = false;
-        bool wants_evse = false;
-        get_node_or_default(wants_ev, "ev_bsp", "enable", false);
-        get_node_or_default(wants_evse, "evse_bsp", "enable", false);
-        if (wants_ev && wants_evse) {
-            std::cerr << "Configuration error: Cannot enable EVSE and EV BSP at the same time" << std::endl;
-            throw std::exception();
-        }
+    bool wants_ev = false;
+    bool wants_evse = false;
+    get_node_or_default(wants_ev, "ev_bsp", "enable", false);
+    get_node_or_default(wants_evse, "evse_bsp", "enable", false);
+    bool const wants_both = wants_ev && wants_evse;
+    if (wants_both && not discovery_sentinel(c.cb_remote).has_value()) {
+        std::cerr << "Configuration error: Cannot enable EVSE and EV BSP at the same time (both are only "
+                     "allowed with an ANY* mDNS endpoint, where the discovered board selects the role)"
+                  << std::endl;
+        throw std::exception();
     }
 
     get_block("evse_bsp", c.bsp, [&](auto& cfg, auto const& main) {
@@ -247,20 +368,25 @@ void parse_config_impl(c4::yml::NodeRef& config, charge_bridge_config& c, std::f
         get_node(cfg.api.ovm.module_id, main, "ovm_module_id");
     });
 
+    auto const parse_ev_bsp = [&](auto& cfg, auto const& main) {
+        cfg.cb_port = g_cb_port_evse_bsp;
+        cfg.api.ev.enabled = true;
+        get_node(cfg.api.ev.module_id, main, "module_id");
+        get_node(cfg.api.mqtt_remote, main, "mqtt_remote");
+        get_node_or_default(cfg.api.mqtt_bind, main, "mqtt_bind", "");
+        get_node(cfg.api.mqtt_port, main, "mqtt_port");
+        get_node_or_default(cfg.api.mqtt_ping_interval_ms, main, "mqtt_ping_interval_ms",
+                            default_mqtt_ping_interval_ms);
+        cfg.cb_remote = c.cb_remote;
+        get_node(cfg.api.ovm.enabled, main, "ovm_enabled");
+        get_node(cfg.api.ovm.module_id, main, "ovm_module_id");
+    };
+    // An ev_bsp block next to an EVSE BSP is the alternate only when both carry an explicit
+    // "enable: true"; get_block alone would also enable a block without the key.
     if (not c.bsp.has_value()) {
-        get_block("ev_bsp", c.bsp, [&](auto& cfg, auto const& main) {
-            cfg.cb_port = g_cb_port_evse_bsp;
-            cfg.api.ev.enabled = true;
-            get_node(cfg.api.ev.module_id, main, "module_id");
-            get_node(cfg.api.mqtt_remote, main, "mqtt_remote");
-            get_node_or_default(cfg.api.mqtt_bind, main, "mqtt_bind", "");
-            get_node(cfg.api.mqtt_port, main, "mqtt_port");
-            get_node_or_default(cfg.api.mqtt_ping_interval_ms, main, "mqtt_ping_interval_ms",
-                                default_mqtt_ping_interval_ms);
-            cfg.cb_remote = c.cb_remote;
-            get_node(cfg.api.ovm.enabled, main, "ovm_enabled");
-            get_node(cfg.api.ovm.module_id, main, "ovm_module_id");
-        });
+        get_block("ev_bsp", c.bsp, parse_ev_bsp);
+    } else if (wants_both) {
+        get_block("ev_bsp", c.bsp_alternate, parse_ev_bsp);
     }
 
     // The section was renamed "gpio" -> "io". Reject the old name explicitly: silently ignoring it
@@ -286,6 +412,8 @@ void parse_config_impl(c4::yml::NodeRef& config, charge_bridge_config& c, std::f
     get_block("heartbeat", c.heartbeat, [&](auto& cfg, auto const& main) {
         get_node_or_default(cfg.interval_s, main, "interval_s", 1);
         get_node_or_default(cfg.connection_to_s, main, "connection_to_s", 3 * cfg.interval_s);
+        // cb-session-v1: steal the MCU even if a healthy session on another host owns it
+        get_node_or_default(cfg.force_takeover, main, "force_takeover", false);
         cfg.cb_remote = c.cb_remote;
         cfg.cb_port = c.cb_port;
         get_node(cfg.cb_config.safety, "safety");
@@ -317,6 +445,49 @@ void parse_config_impl(c4::yml::NodeRef& config, charge_bridge_config& c, std::f
         }
         get_node(cfg.cb_config.plc_powersaving_mode, "plc", "powersaving_mode");
 
+        // The role the MCU latches from the first config heartbeat after it boots.
+        cfg.cb_config.cb_type = to_wire(c.type);
+
+        // charge_bridge.type derives the station_id default (EVSE is the PLCA coordinator, an EV the
+        // first follower). Read into an int rather than the int8_t on the wire so a value that is no
+        // node id at all can be recognised instead of silently wrapping.
+        std::optional<int> configured_station_id;
+        if (has_node("plc", "station_id")) {
+            int value = 0;
+            get_node(value, "plc", "station_id");
+            configured_station_id = value;
+        }
+        auto const station = decide_station_id(c.type, configured_station_id);
+        switch (station.issue) {
+        case station_id_issue::evse_not_coordinator:
+            // Fires for an explicit EVSE and for an absent type, which derives like one. Naming EVSE
+            // in both cases would repeat the absent-is-EVSE conflation this key exists to avoid, so
+            // the message says which of the two it actually is.
+            std::cerr << "Configuration warning: plc::station_id is " << station.station_id << " but charge_bridge::"
+                      << (c.type == cb_role::unspecified ? "type is not configured (defaults to EVSE)" : "type is EVSE")
+                      << ", which is the PLCA coordinator (station 0)" << std::endl;
+            break;
+        case station_id_issue::ev_is_coordinator:
+            std::cerr << "Configuration warning: plc::station_id 0 is the PLCA coordinator (the EVSE), "
+                         "but charge_bridge::type is EV"
+                      << std::endl;
+            break;
+        case station_id_issue::out_of_range:
+            // Refused rather than corrected: every fallback has to guess, and the guess for an EVSE
+            // would be station 0 - the coordinator seat, which is exactly what a typo must not be able
+            // to hand out silently.
+            std::cerr << "Configuration error: plc::station_id " << station.station_id
+                      << " is not a PLCA node id (0..7, or -1 for collision detection)" << std::endl;
+            break;
+        case station_id_issue::none:
+            break;
+        }
+        if (is_fatal(station.issue)) {
+            throw std::runtime_error("");
+        }
+        cfg.cb_config.station_id = static_cast<std::int8_t>(station.station_id);
+        cfg.station_id_derived = station.derived;
+
         // Optional: forward the MCU's debug-UART (printf) output to this host over UDP. Off by
         // default; the bridge logs each received line to the console prefixed with "[MCU]".
         bool enable_debug_uart_udp = false;
@@ -325,6 +496,32 @@ void parse_config_impl(c4::yml::NodeRef& config, charge_bridge_config& c, std::f
 
         cfg.cb_config.config_version = CB_CONFIG_VERSION;
     });
+
+    // The link status rides inside the heartbeat reply, and the carrier is gated on the
+    // heartbeat-verified connection state: without a heartbeat block there is no transport for the
+    // status and the carrier could never be raised at all. Reject the configuration instead of
+    // silently keeping the link down.
+    if (c.plc.has_value() and c.plc->carrier == carrier_mode::firmware and not c.heartbeat.has_value()) {
+        std::cerr << "Configuration error: plc::carrier: firmware requires an enabled 'heartbeat' block" << std::endl;
+        throw std::runtime_error("");
+    }
+
+    // The carrier gate's CE state rides in the BSP status packet the same way: without a BSP block
+    // there is no transport for it and the gate would hold the carrier down forever. And in carrier
+    // mode none there is no carrier being driven for the gate to act on - a configured gate that
+    // silently does nothing is a misconfiguration, not a default.
+    if (c.plc.has_value() and c.plc->gate not_eq carrier_gate::none) {
+        if (c.plc->carrier not_eq carrier_mode::firmware) {
+            std::cerr << "Configuration error: plc::carrier_gate requires plc::carrier: firmware" << std::endl;
+            throw std::runtime_error("");
+        }
+        if (not c.bsp.has_value()) {
+            std::cerr << "Configuration error: plc::carrier_gate: ce_mated requires an enabled 'evse_bsp' or "
+                         "'ev_bsp' block (the CE state rides in the BSP status packet)"
+                      << std::endl;
+            throw std::runtime_error("");
+        }
+    }
 
     get_node(c.firmware.fw_path, "charge_bridge", "fw_file");
     get_node(c.firmware.fw_update_on_start, "charge_bridge", "fw_update_on_start");
@@ -374,13 +571,17 @@ charge_bridge_config set_config_placeholders(charge_bridge_config const& src, ch
         result.plc->cb_remote = ip;
         result.plc->cb = result.cb_name;
         replace(result.plc->plc_tap);
+        replace(result.plc->plc_ip);
+        replace(result.plc->plc_netmaks);
     }
-    if (result.bsp.has_value()) {
-        result.bsp->cb_remote = ip;
-        result.bsp->cb = result.cb_name;
-        replace(result.bsp->api.evse.module_id);
-        replace(result.bsp->api.ev.module_id);
-        replace(result.bsp->api.ovm.module_id);
+    for (auto* bsp : {&result.bsp, &result.bsp_alternate}) {
+        if (bsp->has_value()) {
+            (*bsp)->cb_remote = ip;
+            (*bsp)->cb = result.cb_name;
+            replace((*bsp)->api.evse.module_id);
+            replace((*bsp)->api.ev.module_id);
+            replace((*bsp)->api.ovm.module_id);
+        }
     }
     if (result.heartbeat.has_value()) {
         result.heartbeat->cb = result.cb_name;
@@ -418,8 +619,10 @@ std::vector<charge_bridge_config> parse_config_multi(std::string const& config_f
         ip_list_node >> ip_list;
         std::vector<charge_bridge_config> cb_config_list(ip_list.size());
 
+        // The "##" placeholder counts from 1, not 0: it is also used as the last octet of the
+        // tap's IPv4 address (e.g. "172.25.5.##"), where 0 is the network address.
         for (std::size_t i = 0; i < ip_list.size(); ++i) {
-            set_config_placeholders(base_config, cb_config_list[i], strip_brackets(ip_list[i]), i);
+            set_config_placeholders(base_config, cb_config_list[i], strip_brackets(ip_list[i]), i + 1);
         }
 
         return cb_config_list;

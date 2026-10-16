@@ -4,6 +4,8 @@
 
 import pytest
 import asyncio
+import socket
+import struct
 from datetime import datetime, timezone
 from unittest.mock import Mock
 from copy import deepcopy
@@ -47,6 +49,19 @@ class AcConfigAdjustmentStrategy(EverestConfigAdjustmentStrategy):
         adjusted_config["active_modules"]["connector_1"]["config_module"]["hlc_charge_loop_without_energy_timeout_s"] = self.hlc_charge_loop_without_energy_timeout_s
         return adjusted_config
 
+class RequestZeroPowerInIdleAdjustmentStrategy(EverestConfigAdjustmentStrategy):
+    """
+    Adjustment strategy to set request_zero_power_in_idle of connector_1
+    """
+
+    def __init__(self, request_zero_power_in_idle: bool):
+        self.request_zero_power_in_idle = request_zero_power_in_idle
+
+    def adjust_everest_configuration(self, everest_config: Dict):
+        adjusted_config = deepcopy(everest_config)
+        adjusted_config["active_modules"]["connector_1"]["config_module"]["request_zero_power_in_idle"] = self.request_zero_power_in_idle
+        return adjusted_config
+
 class DcConfigAdjustmentStrategy(EverestConfigAdjustmentStrategy):
     """
     Adjustment strategy to disable DIN SPEC 70121 module
@@ -70,7 +85,8 @@ class DcConfigAdjustmentStrategy(EverestConfigAdjustmentStrategy):
         adjusted_config["active_modules"]["powersupply_dc"]["config_implementation"] = {"main": {"min_current": 0}}
         adjusted_config["active_modules"]["evse_manager"]["config_module"]["zero_power_ignore_pause"] = self.zero_power_ignore_pause
         adjusted_config["active_modules"]["evse_manager"]["config_module"]["hlc_charge_loop_without_energy_timeout_s"] = self.hlc_charge_loop_without_energy_timeout_s
-        adjusted_config["active_modules"]["evse_manager"]["config_module"]["payment_enable_contract"] = self.payment_enable_contract
+        # PyEvJosev signs ISO 15118-20 PnC with P-256, which the Annex B profile check rejects
+        adjusted_config["active_modules"]["evse_manager"]["config_module"]["payment_enable_contract"] = self.payment_enable_contract and not self.ev_d20_only
         adjusted_config["active_modules"]["ev_manager"]["config_module"]["force_payment_option"] = self.force_payment_option
         adjusted_config["active_modules"]["imd"]["config_implementation"]["main"]["resistance_F_Ohm"] = 0 if self.fail_cable_check else 900000
         adjusted_config["active_modules"]["evse_manager"]["config_module"]["cable_check_wait_number_of_imd_measurements"] = self.cable_check_measurements
@@ -208,6 +224,20 @@ async def assert_no_events(mock, excluded_events, wait_time=2, reset_after_check
     if reset_after_check:
         # Reset mock after checking so subsequent calls start fresh
         mock.reset_mock()
+
+
+async def wait_for_variable_value(mock, expected_value, timeout=30):
+    """Wait until the mock received a variable publication with the expected value."""
+    start_time = asyncio.get_event_loop().time()
+
+    while asyncio.get_event_loop().time() - start_time < timeout:
+        for call in mock.call_args_list:
+            if call[0][0] == expected_value:
+                mock.reset_mock()
+                return
+        await asyncio.sleep(0.1)
+
+    raise TimeoutError(f"Timeout waiting for variable value {expected_value}")
 
 
 async def wait_for_ready(mock, timeout=5):
@@ -472,6 +502,76 @@ async def wait_for_hlc_session_failed_with_reason(mock, expected_reason, timeout
     )
 
 
+SDP_PORT = 15118
+SDP_HEADER = struct.Struct("!BBHI")
+SDP_REQUEST_TYPE = 0x9000
+SDP_RESPONSE_TYPE = 0x9001
+SDP_SECURITY_NONE = 0x10
+SDP_TRANSPORT_TCP = 0x00
+
+
+def link_local_interfaces():
+    """Interfaces with an IPv6 link-local address, in interface index order."""
+    interfaces = set()
+    with open("/proc/net/if_inet6") as if_inet6:
+        for line in if_inet6:
+            _, ifindex, _, scope, _, name = line.split()
+            if int(scope, 16) == 0x20:
+                interfaces.add((int(ifindex, 16), name))
+    return [name for _, name in sorted(interfaces)]
+
+
+def sdp_discover_tcp_server(interface: str, timeout: float = 1.0):
+    """Send an SDP request for plain TCP on the interface. Returns the announced (address, port, scope_id)."""
+    ifindex = socket.if_nametoindex(interface)
+    payload = bytes([SDP_SECURITY_NONE, SDP_TRANSPORT_TCP])
+    request = SDP_HEADER.pack(0x01, 0xFE, SDP_REQUEST_TYPE, len(payload)) + payload
+
+    with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as sdp_socket:
+        sdp_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, struct.pack("I", ifindex))
+        sdp_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, 1)
+        sdp_socket.settimeout(timeout)
+        sdp_socket.sendto(request, ("ff02::1", SDP_PORT, 0, ifindex))
+        response, _ = sdp_socket.recvfrom(2048)
+
+    _, _, payload_type, payload_length = SDP_HEADER.unpack_from(response)
+    assert payload_type == SDP_RESPONSE_TYPE and payload_length == 20, f"Unexpected SDP response: {response.hex()}"
+    body = response[SDP_HEADER.size:]
+    address = socket.inet_ntop(socket.AF_INET6, body[0:16])
+    port, security, transport = struct.unpack("!HBB", body[16:20])
+    assert (security, transport) == (SDP_SECURITY_NONE, SDP_TRANSPORT_TCP), f"SDP announced TLS or non-TCP: {body.hex()}"
+    return address, port, ifindex
+
+
+def discover_evse_v2g_tcp_server(everest_core: EverestCore, charger_module_id: str = "iso15118_charger"):
+    """SDP-discover the plain TCP server of an EvseV2G module, resolving device 'auto' like EvseV2G does."""
+    device = everest_core.everest_config["active_modules"][charger_module_id]["config_module"]["device"]
+    interfaces = link_local_interfaces() if device == "auto" else [device]
+    for interface in interfaces:
+        try:
+            return sdp_discover_tcp_server(interface)
+        except TimeoutError:
+            continue
+    raise TimeoutError(f"No SDP response on any of {interfaces}")
+
+
+def tcp_connection_closed_by_peer(address: str, port: int, scope_id: int, timeout: float = 5.0) -> bool:
+    """Open a TCP connection and report whether the peer closes it within the timeout."""
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as tcp_socket:
+        tcp_socket.settimeout(timeout)
+        tcp_socket.connect((address, port, 0, scope_id))
+        try:
+            return tcp_socket.recv(1) == b""
+        except ConnectionResetError:
+            return True
+        except TimeoutError:
+            return False
+
+
+def last_energy_wh(powermeter_mock) -> float:
+    return powermeter_mock.call_args[0][0]["energy_Wh_import"]["total"]
+
+
 ###################################################
 ################ Begin Tests ######################
 ###################################################
@@ -713,6 +813,43 @@ async def test_iso15118_dc_session_error_before_session(
         session_event_mock.call_count == 0
     ), "No session events should occur while error is active"
 
+
+@pytest.mark.asyncio
+@pytest.mark.xdist_group(name="ISO15118")
+@pytest.mark.probe_module(
+    connections={"evse_manager": [Requirement("evse_manager", "evse")]}
+)
+@pytest.mark.everest_core_config("config-sil-dc-evsev2g.yaml")
+@pytest.mark.everest_config_adaptions(DcConfigAdjustmentStrategy())
+async def test_iso15118_dc_session_survives_second_tcp_connection(
+    test_controller: TestController, everest_core: EverestCore
+):
+    """
+    Test that EvseV2G closes further TCP connections during an ISO 15118-2 DC charging session
+    without touching the session context of the active connection.
+    """
+    _, session_event_mock, powermeter_mock, _ = await setup_session_mocks(
+        test_controller, everest_core
+    )
+
+    await start_session(test_controller, session_event_mock, test_controller.plug_in_dc_iso)
+    await assert_energy_exceeds(powermeter_mock, energy_threshold_wh=10, timeout=15)
+
+    address, port, scope_id = await asyncio.to_thread(discover_evse_v2g_tcp_server, everest_core)
+    for _ in range(3):
+        assert await asyncio.to_thread(
+            tcp_connection_closed_by_peer, address, port, scope_id
+        ), "EvseV2G kept a second TCP connection open"
+
+    await assert_no_events(
+        session_event_mock,
+        ["ChargingPausedEV", "ChargingPausedEVSE", "StoppingCharging", "ChargingFinished",
+         "TransactionFinished", "SessionFinished"],
+        wait_time=5,
+    )
+    await assert_energy_exceeds(powermeter_mock, energy_threshold_wh=last_energy_wh(powermeter_mock) + 5, timeout=20)
+    await end_session(test_controller, session_event_mock)
+
 ###########################################################
 ################ External Limits Capabilities Tests #######
 ###########################################################
@@ -786,6 +923,7 @@ async def test_pwm_ac_session_no_energy_before_session(
 
 
 @pytest.mark.asyncio
+@pytest.mark.xdist_group(name="ISO15118")
 @pytest.mark.probe_module(
     connections={
         "evse_manager": [Requirement("connector_1", "evse")],
@@ -1159,11 +1297,28 @@ async def test_iso15118_dc_session_paused_by_ev(
 )
 @pytest.mark.xdist_group(name="ISO15118")
 @pytest.mark.everest_core_config("config-sil.yaml")
+@pytest.mark.parametrize(
+    "request_zero_power_in_idle",
+    [
+        pytest.param(
+            False,
+            marks=pytest.mark.everest_config_adaptions(RequestZeroPowerInIdleAdjustmentStrategy(False)),
+            id="request_zero_power_in_idle_false",
+        ),
+        pytest.param(
+            True,
+            marks=pytest.mark.everest_config_adaptions(RequestZeroPowerInIdleAdjustmentStrategy(True)),
+            id="request_zero_power_in_idle_true",
+        ),
+    ],
+)
 async def test_pwm_ac_session_paused_by_evse(
-    test_controller: TestController, everest_core: EverestCore
+    request_zero_power_in_idle, test_controller: TestController, everest_core: EverestCore
 ):
     """
     Test session events of a basic PWM AC charging session with session paused by EVSE.
+    With request_zero_power_in_idle the EVSE requests no energy while paused by the user and has to request
+    energy again once the pause is lifted, otherwise it could never resume.
     """
 
     probe_module, session_event_mock, powermeter_mock, _ = await setup_session_mocks(
@@ -1201,12 +1356,12 @@ async def test_pwm_ac_session_paused_by_evse(
     connections={
         "evse_manager": [Requirement("connector_1", "evse")],
         "gcp": [Requirement("grid_connection_point", "external_limits")],
+        "slac": [Requirement("slac", "evse")],
     }
 )
 @pytest.mark.xdist_group(name="ISO15118")
 @pytest.mark.everest_config_adaptions(AcConfigAdjustmentStrategy())
 @pytest.mark.everest_core_config("config-sil.yaml")
-@pytest.mark.skip(reason="Currently fails because EV Simulator does not start a new session once it is a user pause")
 async def test_iso15118_ac_session_paused_by_evse(
     test_controller: TestController, everest_core: EverestCore
 ):
@@ -1216,8 +1371,11 @@ async def test_iso15118_ac_session_paused_by_evse(
     probe_module, session_event_mock, powermeter_mock, _ = await setup_session_mocks(
         test_controller, everest_core
     )
+    slac_state_mock = Mock()
+    probe_module.subscribe_variable("slac", "state", slac_state_mock)
     await start_session(test_controller, session_event_mock, test_controller.plug_in_ac_iso)
     await assert_energy_exceeds(powermeter_mock, energy_threshold_wh=10, timeout=15)
+    slac_state_mock.reset_mock()
     await probe_module.call_command(
         "evse_manager",
         "pause_charging",
@@ -1225,7 +1383,10 @@ async def test_iso15118_ac_session_paused_by_evse(
     )
     await wait_for_session_events(session_event_mock, ["ChargingPausedEVSE"])
     await assert_power_below(powermeter_mock, power_threshold_w=10, timeout=5)
-    await assert_no_events(session_event_mock, ["ChargingStarted"], wait_time=5)
+    # Resume only once the EVSE has processed the V2G session teardown: the D-LINK handler
+    # resets SLAC last, so UNMATCHED means the pause has settled.
+    await wait_for_variable_value(slac_state_mock, "UNMATCHED", timeout=15)
+    await assert_no_events(session_event_mock, ["ChargingStarted"])
     await probe_module.call_command(
         "evse_manager",
         "resume_charging",
@@ -1240,12 +1401,12 @@ async def test_iso15118_ac_session_paused_by_evse(
     connections={
         "evse_manager": [Requirement("evse_manager", "evse")],
         "gcp": [Requirement("grid_connection_point", "external_limits")],
+        "slac": [Requirement("slac", "evse")],
     }
 )
 @pytest.mark.xdist_group(name="ISO15118")
 @pytest.mark.everest_core_config("config-sil-dc.yaml")
 @pytest.mark.everest_config_adaptions(DcConfigAdjustmentStrategy())
-@pytest.mark.skip(reason="Currently fails because EV Simulator does not start a new session once it is a user pause")
 async def test_iso15118_dc_session_paused_by_evse(
     test_controller: TestController, everest_core: EverestCore
 ):
@@ -1256,9 +1417,12 @@ async def test_iso15118_dc_session_paused_by_evse(
     probe_module, session_event_mock, powermeter_mock, _ = await setup_session_mocks(
         test_controller, everest_core
     )
+    slac_state_mock = Mock()
+    probe_module.subscribe_variable("slac", "state", slac_state_mock)
 
     await start_session(test_controller, session_event_mock, test_controller.plug_in_dc_iso)
     await assert_energy_exceeds(powermeter_mock, energy_threshold_wh=10, timeout=15)
+    slac_state_mock.reset_mock()
     await probe_module.call_command(
         "evse_manager",
         "pause_charging",
@@ -1266,6 +1430,10 @@ async def test_iso15118_dc_session_paused_by_evse(
     )
     await wait_for_session_events(session_event_mock, ["ChargingPausedEVSE"])
     await assert_power_below(powermeter_mock, power_threshold_w=10, timeout=5)
+    # Resume only once the EVSE has processed the V2G session teardown: the D-LINK handler
+    # resets SLAC last, so UNMATCHED means the pause has settled.
+    await wait_for_variable_value(slac_state_mock, "UNMATCHED", timeout=15)
+    await assert_no_events(session_event_mock, ["ChargingStarted"])
     await probe_module.call_command(
         "evse_manager",
         "resume_charging",
@@ -1278,6 +1446,7 @@ async def test_iso15118_dc_session_paused_by_evse(
 
 
 @pytest.mark.asyncio
+@pytest.mark.xdist_group(name="ISO15118")
 @pytest.mark.probe_module(
     connections={"evse_manager": [Requirement("evse_manager", "evse")]}
 )
@@ -1299,6 +1468,7 @@ async def test_iso15118_protocol_negotiation_failed(
     test_controller.plug_out()
 
 @pytest.mark.asyncio
+@pytest.mark.xdist_group(name="ISO15118")
 @pytest.mark.probe_module(
     connections={"evse_manager": [Requirement("evse_manager", "evse")]}
 )
@@ -1322,6 +1492,7 @@ async def test_iso15118_tls_handshake_failed_ev_reason(
 
 
 @pytest.mark.asyncio
+@pytest.mark.xdist_group(name="ISO15118")
 @pytest.mark.probe_module(
     connections={"evse_manager": [Requirement("evse_manager", "evse")]}
 )
@@ -1347,6 +1518,7 @@ async def test_iso15118_dc_charging_parameters_not_accepted_ac_ev(
 
 
 @pytest.mark.asyncio
+@pytest.mark.xdist_group(name="ISO15118")
 @pytest.mark.probe_module(
     connections={"evse_manager": [Requirement("evse_manager", "evse")]}
 )
@@ -1372,6 +1544,7 @@ async def test_iso15118_pnc_only_ev_authorization_failed(
     test_controller.plug_out()
 
 @pytest.mark.asyncio
+@pytest.mark.xdist_group(name="ISO15118")
 @pytest.mark.probe_module(
     connections={"evse_manager": [Requirement("evse_manager", "evse")]}
 )
@@ -1406,6 +1579,7 @@ async def test_iso15118_dc_cable_check_failed(
 
 
 @pytest.mark.asyncio
+@pytest.mark.xdist_group(name="ISO15118")
 @pytest.mark.probe_module(
     connections={
         "evse_manager": [Requirement("evse_manager", "evse")],

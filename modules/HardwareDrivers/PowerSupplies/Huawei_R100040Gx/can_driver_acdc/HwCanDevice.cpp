@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 - 2025 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 
 #include "HwCanDevice.hpp"
 #include "CanPackets.hpp"
@@ -7,7 +7,7 @@
 #include <iostream>
 #include <unistd.h>
 
-#include <fmt/core.h>
+#include <fmt/format.h>
 
 HwCanDevice::~HwCanDevice() {
     exit_tx_thread = true;

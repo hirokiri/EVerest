@@ -40,6 +40,11 @@ channels:
     messages:
       receive_leave_bcd:
         $ref: '#/components/messages/receive_leave_bcd'
+  receive_count_bc:
+    address: 'e2m/count_bc'
+    messages:
+      receive_count_bc:
+        $ref: '#/components/messages/receive_count_bc'
   receive_dlink_terminate:
     address: 'e2m/dlink_terminate'
     messages:
@@ -120,6 +125,12 @@ operations:
     action: receive
     channel:
       $ref: '#/channels/receive_leave_bcd'
+    description: 'Direction: EVerest to Module'
+  receive_count_bc:
+    title: 'Receive count_bc'
+    action: receive
+    channel:
+      $ref: '#/channels/receive_count_bc'
     description: 'Direction: EVerest to Module'
   receive_dlink_terminate:
     title: 'Receive dlink_terminate'
@@ -210,6 +221,19 @@ components:
       name: receive_leave_bcd
       title: 'Leave B/C/D'
       summary: Signal pilot state change to A/E/F from B/C/D.
+    receive_count_bc:
+      name: receive_count_bc
+      title: 'B/C transition count'
+      summary: >-
+        Running count of Control-Pilot B->C transitions in the current session, pushed by EvseManager on
+        every edge and reset to 0 at plug-in. SLAC uses the delta over the CM_VALIDATE toggle window as
+        the number of BCB toggles the EV performed.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/BcTransitionCount'
+      examples:
+        - summary: "Second B->C edge of the session"
+          payload: 2
     receive_dlink_terminate:
       name: receive_dlink_terminate
       title: 'Dlink terminate'
@@ -229,7 +253,7 @@ components:
       summary: Provides the state enum.
       contentType: application/json
       payload:
-        $ref: '#/components/schemas/SLACState'
+        $ref: '#/components/schemas/State'
       examples:
         - summary: "Example state MATCHED"
           payload: "MATCHED"
@@ -319,10 +343,13 @@ components:
   
 
   schemas:
+    BcTransitionCount:
+      type: integer
+      description: 'Running count of Control-Pilot B->C transitions in the current session.'
     Enabled:
       type: boolean
       description: 'true: start SLAC after reset, false: stop SLAC'
-    SLACState:
+    State:
       description: Provides the state enum.
       type: string
       enum:
@@ -354,7 +381,10 @@ components:
           description: Sub-type of the error.
         message:
           type: string
-          description: Addition information about the error
+          description: |-
+            Optional additional information about the error
+            OCPP 1.6: Sets `info` on MREC errors and `vendorId` otherwise
+            OCPP 2.x: Sets `techInfo`
     ErrorEnum:
       description: |
         Type of Error

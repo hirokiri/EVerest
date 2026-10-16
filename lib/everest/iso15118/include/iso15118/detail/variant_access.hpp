@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2023 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 #pragma once
 
 #include <cassert>
@@ -19,6 +19,7 @@ struct VariantAccess {
     std::unique_ptr<void, Variant::CustomDeleter>& data;
     iso15118::message_20::Type& type;
     std::string& error;
+    bool& undecodable;
 
     template <typename MessageType, typename CbExiMessageType> void insert_type(const CbExiMessageType& in) {
         assert(data.get() == nullptr);

@@ -63,32 +63,37 @@ def probe_module(everest_core: EverestCore) -> ProbeModule:
     probe_module.implement_command(
         "ProbeModuleOcpp", "change_availability", lambda arg: {"status": "Accepted"})
     probe_module.implement_command(
-        "ProbeModuleOcppDataTransfer", "data_transfer", lambda arg: {"status": "Accepted"})
+        "ProbeModuleOcpp", "monitor_and_get_variables", lambda arg: {"status": "Accepted"})
+    probe_module.implement_command(
+        "ProbeModuleOcppDataTransfer", "data_transfer", lambda arg: [])
 
     probe_module.start()
     return probe_module
 
 
-def _subscribe_to_queue(handler: AsyncApiMqttHandler, topic: str) -> Queue:
+async def _subscribe_to_queue(handler: AsyncApiMqttHandler, topic: str) -> Queue:
     """Collects the payloads published on an external topic."""
     queue = Queue()
 
     async def on_message(payload: str):
         queue.put(json.loads(payload))
 
-    handler.register_handler(topic, on_message)
+    await handler.register_handler(topic, on_message)
     return queue
 
 
-async def _get_from_queue(queue: Queue, deadline: float = 10.0):
+async def _get_from_queue(queue: Queue, deadline: float = 10.0, *, ignore_values=()):
+    """Return the next payload other than an explicitly allowed stale value."""
     loop = asyncio.get_event_loop()
     end = loop.time() + deadline
     while loop.time() < end:
         try:
-            return await loop.run_in_executor(None, lambda: queue.get(timeout=0.5))
+            value = await loop.run_in_executor(None, lambda: queue.get(timeout=0.5))
+            if value not in ignore_values:
+                return value
         except Empty:
             continue
-    raise TimeoutError("no value received on the external topic")
+    raise TimeoutError("no new value received on the external topic")
 
 
 async def _publish_status_until_received(probe_module: ProbeModule, queues, status: dict,
@@ -125,9 +130,9 @@ async def test_connection_status_is_forwarded_with_legacy_is_connected(
     probe_module: ProbeModule,
 ):
     prefix = everest_core.mqtt_external_prefix
-    status_queue = _subscribe_to_queue(
+    status_queue = await _subscribe_to_queue(
         async_api_mqtt_handler, f"{prefix}{API_BASE}/e2m/connection_status")
-    is_connected_queue = _subscribe_to_queue(
+    is_connected_queue = await _subscribe_to_queue(
         async_api_mqtt_handler, f"{prefix}{API_BASE}/e2m/is_connected")
 
     # the connection status is forwarded verbatim, is_connected repeats its connected flag
@@ -141,8 +146,10 @@ async def test_connection_status_is_forwarded_with_legacy_is_connected(
     disconnected_status = dict(CONNECTED_STATUS, connected=False)
     probe_module.publish_variable(
         "ProbeModuleOcpp", "connection_status", disconnected_status)
-    assert await _get_from_queue(status_queue) == disconnected_status
-    assert await _get_from_queue(is_connected_queue) is False
+    # Startup retries can still be queued or in flight. Skip only the previously
+    # validated connected payloads, so unexpected changed payloads still fail.
+    assert await _get_from_queue(status_queue, ignore_values=(CONNECTED_STATUS,)) == disconnected_status
+    assert await _get_from_queue(is_connected_queue, ignore_values=(True,)) is False
 
 
 @pytest.mark.asyncio
@@ -153,9 +160,9 @@ async def test_latched_connection_status_and_is_connected_are_served(
     probe_module: ProbeModule,
 ):
     prefix = everest_core.mqtt_external_prefix
-    status_queue = _subscribe_to_queue(
+    status_queue = await _subscribe_to_queue(
         async_api_mqtt_handler, f"{prefix}{API_BASE}/e2m/connection_status")
-    is_connected_queue = _subscribe_to_queue(
+    is_connected_queue = await _subscribe_to_queue(
         async_api_mqtt_handler, f"{prefix}{API_BASE}/e2m/is_connected")
 
     await _publish_status_until_received(
@@ -164,7 +171,7 @@ async def test_latched_connection_status_and_is_connected_are_served(
     for variable, expected in (("connection_status", CONNECTED_STATUS),
                                ("is_connected", True)):
         reply_topic = f"{API_BASE}/e2m/{variable}/reply"
-        reply_queue = _subscribe_to_queue(
+        reply_queue = await _subscribe_to_queue(
             async_api_mqtt_handler, f"{prefix}{reply_topic}")
         await async_api_mqtt_handler.publish(
             f"{prefix}{API_BASE}/m2e/{variable}/get",

@@ -188,7 +188,7 @@ void ConfigServiceCore::internal_reinitialize_from_db(bool force_reload) {
     // always reload module configuration in order to include possible WillApplyOnRestart changes
     reload_from_storage();
     if (slot_changed) {
-        publish_active_slot_update();
+        publish_active_slot_update(ActiveSlotUpdateCause::SlotInfo);
     }
 }
 
@@ -196,8 +196,8 @@ std::unique_ptr<ec::SqliteStorage> ConfigServiceCore::make_storage(int slot_id) 
     return std::make_unique<ec::SqliteStorage>(m_db, slot_id);
 }
 
-void ConfigServiceCore::publish_active_slot_update() {
-    const ActiveSlotUpdate update{now_rfc3339(), m_active_slot_id, m_next_boot_slot_id, m_module_status};
+void ConfigServiceCore::publish_active_slot_update(ActiveSlotUpdateCause cause) {
+    const ActiveSlotUpdate update{now_rfc3339(), m_active_slot_id, m_next_boot_slot_id, m_module_status, cause};
     auto handlers_copy = m_active_slot_handlers;
 
     for (const auto& handler : handlers_copy) {
@@ -229,12 +229,37 @@ void ConfigServiceCore::reload_from_storage() {
     }
     try {
         // Validate against manifests, interfaces and requirements; enriches configs with manifest metadata.
-        m_module_configs = Everest::validate_preloaded_module_configs(m_parse_settings, resp.module_configs);
+        auto validated = Everest::validate_preloaded_module_configs(m_parse_settings, resp.module_configs);
+        m_module_configs = std::move(validated.module_configs);
+        m_manifests.update(validated.manifests);
         std::atomic_store(&m_active_configs_ptr, std::make_shared<const ec::ModuleConfigurations>(m_module_configs));
     } catch (const std::exception& e) {
         EVLOG_error << "Configuration loaded from database for slot " << m_active_slot_id
                     << " failed validation: " << e.what() << " -> Keeping the previous in-memory configuration.";
     }
+}
+
+std::optional<std::string> ConfigServiceCore::validate_update(const ec::ModuleConfigurations& configurations,
+                                                              const ec::ConfigurationParameter& parameter,
+                                                              const ConfigParameterUpdate& update) {
+    if (auto datatype_error = ec::validate_config_value(parameter.characteristics, update.value)) {
+        return datatype_error;
+    }
+
+    const auto& module_name = configurations.at(update.identifier.module_id).module_name;
+    if (not m_manifests.contains(module_name)) {
+        // Only an inactive slot that was not validated by this process refers to a module not cached yet
+        const auto manifest_path = m_parse_settings.modules_dir / module_name / "manifest.yaml";
+        try {
+            m_manifests[module_name] = Everest::load_yaml(manifest_path);
+        } catch (const std::exception& e) {
+            return fmt::format("Failed to load manifest {}: {}", manifest_path.string(), e.what());
+        }
+    }
+
+    return Everest::validate_config_parameter_value(
+        m_manifests.at(module_name), update.identifier,
+        ec::parse_config_value(parameter.characteristics.datatype, update.value));
 }
 
 // --- Slot management ---
@@ -277,7 +302,7 @@ SetActiveSlotStatus ConfigServiceCore::internal_mark_active_slot(int slot_id) {
         return SetActiveSlotStatus::Failed;
     }
     m_next_boot_slot_id = slot_id;
-    publish_active_slot_update();
+    publish_active_slot_update(ActiveSlotUpdateCause::SlotInfo);
     EVLOG_info << "Successfully marked slot " << slot_id << " as active for next boot.";
     return SetActiveSlotStatus::Success;
 }
@@ -345,7 +370,9 @@ LoadFromYamlResult ConfigServiceCore::internal_load_from_yaml(const std::string&
         const auto json_config = Everest::load_yaml_from_string(raw_yaml);
 
         // Validate against manifests, interfaces and requirements; enriches configs with manifest metadata.
-        const auto module_configs = Everest::validate_module_configs(m_parse_settings, json_config);
+        auto validated = Everest::validate_module_configs(m_parse_settings, json_config);
+        m_manifests.update(validated.manifests);
+        const auto module_configs = std::move(validated.module_configs);
 
         // If the slot doesn't exist, create it and write the config
         if (into_new_slot) {
@@ -380,10 +407,13 @@ LoadFromYamlResult ConfigServiceCore::internal_load_from_yaml(const std::string&
                 EVLOG_error << "Failed to load from YAML into slot " << target_slot_id << ": " << err_msg;
                 return {false, std::nullopt, err_msg};
             }
+        }
 
-            if (target_slot_id == m_active_slot_id) {
-                internal_reinitialize_from_db(true);
-            }
+        // The active slot's in-memory configuration follows the database, whether the slot was replaced or
+        // just created (a service constructed on an empty database has a default active slot 0 that does not
+        // exist yet).
+        if (target_slot_id == m_active_slot_id) {
+            internal_reinitialize_from_db(true);
         }
 
         EVLOG_info << "Successfully loaded from YAML into slot " << target_slot_id << ".";
@@ -494,6 +524,7 @@ ConfigServiceCore::internal_set_config_parameters(int slot_id, const std::vector
 void ConfigServiceCore::apply_active_slot_updates(const std::vector<ConfigParameterUpdate>& updates,
                                                   SetConfigParameterResult& result, ConfigurationUpdate& event) {
     const bool modules_are_running = m_module_status == ActiveSlotStatus::Running;
+    const bool modules_down = modules_are_down(m_module_status);
 
     for (size_t i = 0; i < updates.size(); ++i) {
         const auto& update = updates[i];
@@ -508,11 +539,7 @@ void ConfigServiceCore::apply_active_slot_updates(const std::vector<ConfigParame
         auto [in_memory_parameter, parameter_access] = lookup.value();
         const auto mutability = in_memory_parameter->characteristics.mutability;
 
-        // Validate the value against the parameter's datatype before anything is persisted; a value
-        // that would fail to parse on the next boot must never reach the database. No range
-        // (min/max) validation happens at this layer.
-        if (const auto validation_error =
-                ec::validate_config_value(in_memory_parameter->characteristics, update.value)) {
+        if (const auto validation_error = validate_update(m_module_configs, *in_memory_parameter, update)) {
             result_enum = SetConfigParameterResultEnum::Rejected;
             per_result.status_info = validation_error.value();
             continue;
@@ -548,6 +575,14 @@ void ConfigServiceCore::apply_active_slot_updates(const std::vector<ConfigParame
             continue;
         }
         result_enum = SetConfigParameterResultEnum::WillApplyOnRestart;
+
+        // With the modules down there is no runtime value to keep: the in-memory configuration is
+        // exactly what the next start uses, so it follows the persisted value right away. While the
+        // modules run, it only changes once the module confirms the runtime change (see below).
+        if (modules_down) {
+            in_memory_parameter->value =
+                ec::parse_config_value(in_memory_parameter->characteristics.datatype, update.value);
+        }
 
         // Now test if the module applies the update at runtime
         if (mutability == ec::Mutability::ReadWrite and modules_are_running) {
@@ -615,10 +650,7 @@ void ConfigServiceCore::apply_inactive_slot_updates(int slot_id, const std::vect
         }
         auto [parameter, parameter_access] = lookup.value();
 
-        // Validate the value against the parameter's datatype before persisting; a value that would
-        // fail to parse when booting from this slot must never reach the database. No range
-        // (min/max) validation happens at this layer.
-        if (const auto validation_error = ec::validate_config_value(parameter->characteristics, update.value)) {
+        if (const auto validation_error = validate_update(inactive_configuration.module_configs, *parameter, update)) {
             per_result.status = SetConfigParameterResultEnum::Rejected;
             per_result.status_info = validation_error.value();
             continue;
@@ -691,7 +723,7 @@ void ConfigServiceCore::set_modules_running() {
 }
 void ConfigServiceCore::internal_set_modules_running() {
     m_module_status = ActiveSlotStatus::Running;
-    publish_active_slot_update();
+    publish_active_slot_update(ActiveSlotUpdateCause::ModuleStatus);
 }
 
 void ConfigServiceCore::set_modules_stopped() {
@@ -699,7 +731,7 @@ void ConfigServiceCore::set_modules_stopped() {
 }
 void ConfigServiceCore::internal_set_modules_stopped() {
     m_module_status = ActiveSlotStatus::Stopped;
-    publish_active_slot_update();
+    publish_active_slot_update(ActiveSlotUpdateCause::ModuleStatus);
 }
 
 void ConfigServiceCore::set_modules_starting() {
@@ -707,7 +739,7 @@ void ConfigServiceCore::set_modules_starting() {
 }
 void ConfigServiceCore::internal_set_modules_starting() {
     m_module_status = ActiveSlotStatus::Starting;
-    publish_active_slot_update();
+    publish_active_slot_update(ActiveSlotUpdateCause::ModuleStatus);
 }
 
 void ConfigServiceCore::set_modules_stopping() {
@@ -715,7 +747,7 @@ void ConfigServiceCore::set_modules_stopping() {
 }
 void ConfigServiceCore::internal_set_modules_stopping() {
     m_module_status = ActiveSlotStatus::Stopping;
-    publish_active_slot_update();
+    publish_active_slot_update(ActiveSlotUpdateCause::ModuleStatus);
 }
 
 void ConfigServiceCore::notice_cfg_validation_failed() {
@@ -723,7 +755,7 @@ void ConfigServiceCore::notice_cfg_validation_failed() {
 }
 void ConfigServiceCore::internal_notice_cfg_validation_failed() {
     m_module_status = ActiveSlotStatus::FailedToStart;
-    publish_active_slot_update();
+    publish_active_slot_update(ActiveSlotUpdateCause::ModuleStatus);
 }
 
 void ConfigServiceCore::notice_module_restart_triggered() {
@@ -731,7 +763,7 @@ void ConfigServiceCore::notice_module_restart_triggered() {
 }
 void ConfigServiceCore::internal_notice_module_restart_triggered() {
     m_module_status = ActiveSlotStatus::RestartTriggered;
-    publish_active_slot_update();
+    publish_active_slot_update(ActiveSlotUpdateCause::ModuleStatus);
 }
 
 void ConfigServiceCore::set_modules_at_rest() {

@@ -202,12 +202,12 @@ struct GenericChargePointCallbacksMock : public ocpp_multi::GenericChargePointCa
     MOCK_METHOD(void, cb_time_sync, (const ocpp::DateTime& current_time), (override));
     MOCK_METHOD(void, cb_transaction_event,
                 (const ocpp::v2::TransactionEventRequest& transaction_event,
-                 const std::optional<std::string>& transaction_id),
+                 const std::optional<std::string>& transaction_id, const ocpp::DateTime& timestamp),
                 (override));
     MOCK_METHOD(void, cb_transaction_event_response,
                 (const ocpp::v2::TransactionEventRequest& transaction_event,
                  const ocpp::v2::TransactionEventResponse& transaction_event_response,
-                 const std::optional<std::string>& transaction_id),
+                 const std::optional<std::string>& transaction_id, const ocpp::DateTime& timestamp),
                 (override));
     MOCK_METHOD(ocpp::v2::UnlockConnectorResponse, cb_unlock_connector,
                 (std::int32_t evse_id, std::int32_t connector_id), (override));
@@ -222,11 +222,14 @@ struct GenericChargePointCallbacksMock : public ocpp_multi::GenericChargePointCa
     MOCK_METHOD(void, cb_variable_set, (const ocpp::v2::SetVariableData& set_variable_data), (override));
     MOCK_METHOD(void, cb_waiting_for_external_ready, (std::int32_t evse_id, bool ready), (override));
 
-    MOCK_METHOD(bool, map_error, (const std::string& error, std::string& updated_error), (override));
+    MOCK_METHOD(std::shared_ptr<const ocpp_module_common::custom_error_mapping::CustomFileErrorMapping>,
+                custom_error_mapping, (), (const, override));
     MOCK_METHOD(void, transaction_add,
                 (std::int32_t evse_id, const std::shared_ptr<module::TransactionData>& transaction_data), (override));
     MOCK_METHOD(std::shared_ptr<module::TransactionData>, transaction_data, (std::int32_t evse_id), (override));
     MOCK_METHOD(module::TxEventEffect, transaction_event, (std::int32_t evse_id, module::TxEvent tx_event), (override));
+    MOCK_METHOD(bool, transaction_is_ev_connect_timeout,
+                (std::int32_t evse_id, std::chrono::seconds ev_connection_timeout), (override));
     MOCK_METHOD(void, transaction_reset, (std::int32_t evse_id), (override));
     MOCK_METHOD(void, update_evcc_id_token, (std::int32_t evse, ocpp::v2::IdToken& id_token), (override));
 };

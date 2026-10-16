@@ -49,7 +49,6 @@ want to have on your base system. This image can be based e.g. on
 
    CORE_IMAGE_EXTRA_INSTALL += "\
            everest-core \
-           libocpp \
            openssh \
            mosquitto \
            tzdata \
@@ -64,8 +63,16 @@ want to have on your base system. This image can be based e.g. on
 
 .. note::
 
-   libocpp is part of everest-core as of today (2026), whereas older version
-   still rely on libocpp being hosted separately.
+   Since ``2026.10.0``, *meta-everest* has no individual recipes for the
+   EVerest libraries inside the EVerest monorepo.
+   ``everest-core`` includes all of these. If you have images or recipes
+   written for older EVerest releases, please ensure that they do not rely on
+   any of the following anymore: ``everest-framework``, ``everest-sqlite``,
+   ``libcbv2g``, ``libevse-security``, ``libfsm``, ``libiso15118``, ``liblog``,
+   ``libocpp``, ``libslac`` and ``libtimer``. You must remove these entries
+   from your ``IMAGE_INSTALL``, ``CORE_IMAGE_EXTRA_INSTALL``, ``DEPENDS`` or
+   ``RDEPENDS``, otherwise parsing will fail with ``Nothing PROVIDES`` or
+   ``Nothing RPROVIDES``.
 
 The minimal required packages are ``everest-core`` and ``mosquitto``. The
 package ``tmux`` is only needed for the BringUp & Qualification tools.
@@ -83,6 +90,36 @@ Other debugging tools that may be useful during development phase are:
 
    The locale should be set to UTF-8 (otherwise BringUp & Qualification tools
    will look weird).
+
+Rust modules
+============
+
+``everest-core`` builds its Rust modules (``RsPaymentTerminal``, ``RsIskraMeter``
+and the Rust examples) when its ``PACKAGECONFIG`` contains ``rust``:
+
+.. code-block:: bash
+
+   PACKAGECONFIG:append:pn-everest-core = " rust"
+
+The crates need Rust 1.82 or newer, while scarthgap ships 1.75. The Yocto
+Project's `meta-lts-mixins <https://git.yoctoproject.org/meta-lts-mixins/>`_
+repository has a ``scarthgap/rust`` branch that backports a current toolchain
+under the standard recipe names, so it replaces poky's Rust for the whole
+build. Clone that branch and add the layer to your ``bblayers.conf``:
+
+.. code-block:: bash
+
+   git clone -b scarthgap/rust https://git.yoctoproject.org/meta-lts-mixins
+
+If the Rust in the build is too old, ``everest-core`` and ``cxxbridge-cmd-native``
+skip themselves with a message saying so.
+
+The build runs without network access. The recipe fetches every crate of
+``modules/Cargo.lock`` up front (listed in ``everest-core-crates.inc``) and the
+git dependency of ``RsPaymentTerminal`` at the revision its ``Cargo.toml``
+names. After changing a Rust module's dependencies, update ``modules/Cargo.lock``,
+regenerate the crate list with ``bitbake -c update_crates everest-core`` and,
+for a new zvt revision, ``SRCREV`` in ``everest-core-rust.inc``.
 
 ----
 

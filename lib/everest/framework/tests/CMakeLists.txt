@@ -1,7 +1,3 @@
-if(NOT DISABLE_EDM)
-    list(APPEND CMAKE_MODULE_PATH ${CPM_PACKAGE_catch2_SOURCE_DIR}/extras)
-endif()
-
 include(Catch)
 
 set(TEST_TARGET_NAME ${PROJECT_NAME}_tests)
@@ -12,6 +8,7 @@ target_include_directories(${TEST_TARGET_NAME} PRIVATE
 )
 
 target_sources(${TEST_TARGET_NAME} PRIVATE
+    test_capabilities.cpp
     test_config.cpp
     test_config_service.cpp
     test_config_service_core.cpp
@@ -33,9 +30,11 @@ target_compile_definitions(${TEST_TARGET_NAME}
         EVEREST_FRAMEWORK_EXPECTED_THREAD_POOL_SCALING_LATENCY_THRESHOLD_MS=${EVEREST_FRAMEWORK_THREAD_POOL_SCALING_LATENCY_THRESHOLD_MS}
         EVEREST_FRAMEWORK_EXPECTED_THREAD_POOL_SCALING_LATENCY_TICK_MS=${EVEREST_FRAMEWORK_THREAD_POOL_SCALING_LATENCY_TICK_MS}
         EVEREST_FRAMEWORK_EXPECTED_THREAD_POOL_SCALING_FIXED_SIZE_THRESHOLD=${EVEREST_FRAMEWORK_THREAD_POOL_SCALING_FIXED_SIZE_THRESHOLD}
+        EVEREST_FRAMEWORK_EXPECTED_THREAD_POOL_SCALING_MIN_THREAD_COUNT=${EVEREST_FRAMEWORK_THREAD_POOL_SCALING_MIN_THREAD_COUNT}
+        EVEREST_FRAMEWORK_EXPECTED_THREAD_POOL_SCALING_MAX_THREAD_COUNT=${EVEREST_FRAMEWORK_THREAD_POOL_SCALING_MAX_THREAD_COUNT}
 )
 
-add_subdirectory(controller)
+add_subdirectory(api)
 add_subdirectory(manager)
 
 target_link_libraries(${TEST_TARGET_NAME}
@@ -53,6 +52,8 @@ include(test_utilities.cmake)
 
 setup_test_directory(empty_config)
 setup_test_directory(valid_config)
+setup_test_directory(valid_config_custom_errors_dir)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/valid_config_custom_errors_dir/custom_errors)
 setup_test_directory(valid_config_custom_prefix)
 file(RENAME ${CMAKE_CURRENT_BINARY_DIR}/valid_config_custom_prefix ${CMAKE_CURRENT_BINARY_DIR}/valid_config_custom_prefix_tmp)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/valid_config_custom_prefix)
@@ -74,6 +75,11 @@ setup_test_directory(empty_yaml_object USE_FILESYSTEM_HIERARCHY_STANDARD)
 setup_test_directory(empty_yaml USE_FILESYSTEM_HIERARCHY_STANDARD)
 setup_test_directory(null_yaml USE_FILESYSTEM_HIERARCHY_STANDARD)
 setup_test_directory(string_yaml USE_FILESYSTEM_HIERARCHY_STANDARD)
+# FHS prefix that actually contains etc/everest/default.yaml (all other FHS fixtures do not)
+setup_test_directory(default_yaml USE_FILESYSTEM_HIERARCHY_STANDARD
+    CONFIG empty_yaml_object_config.yaml
+    DEFAULT_CONFIG empty_yaml_object_config.yaml
+)
 
 setup_test_directory(missing_module)
 setup_test_directory(broken_manifest_1 TESTBrokenManifest1 test_interface)
@@ -117,9 +123,6 @@ if(EVEREST_ENABLE_COVERAGE)
 
     append_coverage_compiler_flags_to_target(framework)
     append_coverage_compiler_flags_to_target(manager)
-    if (EVEREST_ENABLE_ADMIN_PANEL_BACKEND)
-        append_coverage_compiler_flags_to_target(controller)
-    endif()
 
     set(GCOVR_ADDITIONAL_ARGS "--gcov-ignore-errors=all")
     setup_target_for_coverage_gcovr_html(

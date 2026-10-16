@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 - 2025 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 #include <evse_security/crypto/openssl/openssl_provider.hpp>
 #include <ocpp/common/websocket/websocket_libwebsockets.hpp>
 
 #include <everest/logging.hpp>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
 #include <libwebsockets.h>
+#pragma GCC diagnostic pop
 
 #include <atomic>
 #include <chrono>
@@ -1380,11 +1383,16 @@ int WebsocketLibwebsockets::process_callback(void* wsi_ptr, int callback_reason,
         break;
 
     case LWS_CALLBACK_WS_PEER_INITIATED_CLOSE: {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): needed for appropriate type
-        std::string close_reason(reinterpret_cast<char*>(in), len);
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): needed for appropriate type
-        const unsigned char* pp = reinterpret_cast<unsigned char*>(in);
-        const auto close_code = (unsigned short)((pp[0] << 8) | pp[1]);
+        std::string close_reason;
+        std::string close_code = "not provided";
+        if (len >= 2) {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): needed for appropriate type
+            const auto* pp = reinterpret_cast<const unsigned char*>(in);
+            close_code = std::to_string(static_cast<unsigned short>((pp[0] << 8) | pp[1]));
+            // The first two bytes contain the close status in network byte order, not part of the reason.
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): needed for appropriate type
+            close_reason.assign(reinterpret_cast<const char*>(pp + 2), len - 2);
+        }
 
         // In the case that the websocket (server) has closed the
         // connection we  must ALWAYS try to reconnect
@@ -1393,7 +1401,7 @@ int WebsocketLibwebsockets::process_callback(void* wsi_ptr, int callback_reason,
         data->update_state(EConnectionState::ERROR);
         on_conn_fail(data);
 
-        // Return 0 to print peer close reason
+        // Return 0 to echo the peer close frame and close the connection
         return 0;
     }
 
@@ -1556,6 +1564,13 @@ int WebsocketLibwebsockets::process_callback(void* wsi_ptr, int callback_reason,
     case LWS_CALLBACK_MQTT_UNSUBSCRIBE_TIMEOUT:
     case LWS_CALLBACK_MQTT_SHADOW_TIMEOUT:
     case LWS_CALLBACK_USER:
+    case LWS_CALLBACK_MQTT_QOS2_RX_COMPLETE:
+    case LWS_CALLBACK_HTTP_INTERCEPTOR_CHECK:
+    case LWS_CALLBACK_GET_PSS_SIZE:
+    case LWS_CALLBACK_DHT_VERB_DISPATCH:
+    case LWS_CALLBACK_QT_SERVER_RECEIVE:
+    case LWS_CALLBACK_QT_CLIENT_RECEIVE:
+    case LWS_CALLBACK_CLIENT_ESTABLISHED_EARLY:
         break;
     }
 

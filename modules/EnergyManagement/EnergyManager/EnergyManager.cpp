@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2022 - 2022 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 #include "EnergyManager.hpp"
 #include "Broker.hpp"
 #include "BrokerFastCharging.hpp"
 #include "Market.hpp"
-#include <fmt/core.h>
+#include <fmt/format.h>
 #include <optional>
 
 namespace module {

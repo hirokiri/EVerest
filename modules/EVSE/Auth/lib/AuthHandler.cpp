@@ -11,16 +11,6 @@ using everest::helpers::is_equal_case_insensitive;
 
 namespace module {
 
-/// \brief helper method to intersect referenced_connectors (from ProvidedIdToken) with evses that are listed
-/// within ValidationResult
-std::vector<int> intersect(std::vector<int>& a, std::vector<int>& b) {
-    std::vector<int> result;
-    std::sort(a.begin(), a.end());
-    std::sort(b.begin(), b.end());
-    std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(result));
-    return result;
-}
-
 namespace conversions {
 std::string token_handling_result_to_string(const TokenHandlingResult& result) {
     switch (result) {
@@ -84,9 +74,26 @@ int32_t AuthHandler::get_evse_id_by_index(const int evse_index) {
 }
 
 void AuthHandler::initialize() {
-    std::lock_guard<std::mutex> lock(this->event_mutex);
-    this->reservation_handler.load_reservations();
-    check_evse_reserved_and_send_updates();
+    std::vector<std::pair<int, int32_t>> to_apply;
+    {
+        std::lock_guard<std::mutex> lock(this->event_mutex);
+        this->reservation_handler.load_reservations();
+        check_evse_reserved_and_send_updates();
+
+        for (const auto& [evse_id, evse_context] : this->evses) {
+            if (!evse_context->reported_enabled) {
+                continue;
+            }
+            const auto reservation_id = this->reservation_handler.take_restored_reservation(evse_id);
+            if (reservation_id.has_value()) {
+                to_apply.emplace_back(evse_id, reservation_id.value());
+            }
+        }
+    }
+
+    for (const auto& [evse_id, reservation_id] : to_apply) {
+        this->apply_restored_reservation(evse_id, reservation_id);
+    }
 }
 
 TokenHandlingResult AuthHandler::on_token(const ProvidedIdToken& provided_token) {
@@ -101,8 +108,9 @@ TokenHandlingResult AuthHandler::on_token(const ProvidedIdToken& provided_token)
     // check if token is already currently processed
     EVLOG_info << "Received new token: " << everest::helpers::redact(provided_token);
     const auto referenced_evses = this->get_referenced_evses(provided_token);
+    const bool already_in_process = this->is_token_already_in_process(provided_token, referenced_evses);
 
-    if (!this->is_token_already_in_process(provided_token, referenced_evses)) {
+    if (!already_in_process) {
         // process token if not already in process
         this->tokens_in_process.insert(provided_token);
         this->publish_token_validation_status(provided_token, TokenValidationStatus::Processing);
@@ -138,7 +146,7 @@ TokenHandlingResult AuthHandler::on_token(const ProvidedIdToken& provided_token)
         break;
     }
 
-    if (result != TokenHandlingResult::ALREADY_IN_PROCESS) {
+    if (!already_in_process) {
         this->tokens_in_process.erase(provided_token);
     }
 
@@ -177,8 +185,11 @@ void AuthHandler::handle_token_validation_result_update(const ValidationResultUp
 TokenHandlingResult AuthHandler::handle_token(ProvidedIdToken& provided_token, std::unique_lock<std::mutex>& lk) {
     std::vector<int> referenced_evses = this->get_referenced_evses(provided_token);
 
-    // Only provided token with type RFID can be used to stop a transaction
-    if (provided_token.authorization_type == AuthorizationType::RFID) {
+    // Only provided tokens with type RFID or BankCard can be used to stop a transaction. Bank card tokens can only
+    // match if the token provider publishes a stable, card-derived id_token; providers that publish a fresh token per
+    // presentation (e.g. per-session invoice tokens) never match an active transaction and are unaffected.
+    if (provided_token.authorization_type == AuthorizationType::RFID or
+        provided_token.authorization_type == AuthorizationType::BankCard) {
         // check if id_token is used for an active transaction
         const auto evse_used_for_transaction =
             this->used_for_transaction(referenced_evses, provided_token.id_token.value);
@@ -394,8 +405,9 @@ TokenHandlingResult AuthHandler::handle_token(ProvidedIdToken& provided_token, s
                     provided_token.id_token.value, static_cast<uint32_t>(evse_id), parent_id_token);
 
                 if (validation_result.evse_ids.has_value() and
-                    intersect(referenced_evses, validation_result.evse_ids.value()).empty()) {
-                    EVLOG_debug << "Empty intersection between referenced evses and evses that are authorized";
+                    std::find(validation_result.evse_ids->begin(), validation_result.evse_ids->end(), evse_id) ==
+                        validation_result.evse_ids->end()) {
+                    EVLOG_debug << "Selected evse#" << evse_id << " is not authorized by the validation result";
                     validation_result.authorization_status = AuthorizationStatus::NotAtThisLocation;
                 } else if (reservation_id == std::nullopt &&
                            !this->reservation_handler.is_charging_possible(static_cast<uint32_t>(evse_id))) {
@@ -434,7 +446,9 @@ TokenHandlingResult AuthHandler::handle_token(ProvidedIdToken& provided_token, s
                 const auto connectors = provided_token.connectors.value();
                 std::for_each(connectors.begin(), connectors.end(),
                               [this, provided_token, validation_result, &lk](int32_t connector) {
-                                  this->notify_evse(connector, provided_token, validation_result, lk);
+                                  if (this->evses.find(connector) != this->evses.end()) {
+                                      this->notify_evse(connector, provided_token, validation_result, lk);
+                                  }
                               });
             }
             return TokenHandlingResult::REJECTED;
@@ -736,7 +750,7 @@ ReservationCheckStatus AuthHandler::handle_reservation_exists(std::string& id_to
     }
 
     // Evse id has a value.
-    if (!this->reservation_handler.is_evse_reserved(evse_id.has_value())) {
+    if (!this->reservation_handler.is_evse_reserved(static_cast<uint32_t>(evse_id.value()))) {
         // There is an evse id, but the evse is not reserved.
         return ReservationCheckStatus::NotReserved;
     }
@@ -883,10 +897,12 @@ void AuthHandler::handle_session_event(const int evse_id, const SessionEvent& ev
     }
     case SessionEventEnum::Disabled:
         this->submit_event_for_connector(evse_id, connector_id, ConnectorEvent::DISABLE);
+        this->evses.at(evse_id)->reported_enabled = false;
         check_reservations = true;
         break;
     case SessionEventEnum::Enabled:
         this->submit_event_for_connector(evse_id, connector_id, ConnectorEvent::ENABLE);
+        this->evses.at(evse_id)->reported_enabled = true;
         check_reservations = true;
         break;
     case SessionEventEnum::Deauthorized:
@@ -932,6 +948,15 @@ void AuthHandler::handle_session_event(const int evse_id, const SessionEvent& ev
     // send 'reserved' notifications to the evse manager accordingly if needed.
     if (check_reservations) {
         this->check_evse_reserved_and_send_updates();
+    }
+
+    if (event_type != SessionEventEnum::Enabled) {
+        return;
+    }
+    const auto restored_reservation_id = this->reservation_handler.take_restored_reservation(evse_id);
+    lk.unlock();
+    if (restored_reservation_id.has_value()) {
+        this->apply_restored_reservation(evse_id, restored_reservation_id.value());
     }
 }
 
@@ -1129,6 +1154,21 @@ void AuthHandler::submit_event_for_connector(const int32_t evse_id, const int32_
             this->reservation_handler.on_connector_state_changed(connector.get_state(), evse_id, connector_id);
             break;
         }
+    }
+}
+
+void AuthHandler::apply_restored_reservation(const int evse_id, const int32_t reservation_id) {
+    EVLOG_info << "Applying reservation " << reservation_id << " restored for evse id " << evse_id;
+    if (!this->call_reserved(reservation_id, evse_id)) {
+        if (this->handle_cancel_reservation(reservation_id).first) {
+            this->call_reservation_cancelled(reservation_id, ReservationEndReason::Cancelled, evse_id, true);
+        }
+        return;
+    }
+
+    if (!this->reservation_handler.is_evse_reserved(evse_id, reservation_id)) {
+        // Cancelled or expired while the EvseManager was being called, possibly before it was reserved.
+        this->reservation_cancelled_callback(evse_id, reservation_id, ReservationEndReason::Cancelled, false);
     }
 }
 

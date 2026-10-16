@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2022 - 2022 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 
 #include "serial_communication_hubImpl.hpp"
 
@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <date/date.h>
 #include <date/tz.h>
-#include <fmt/core.h>
+#include <fmt/format.h>
 #include <mutex>
 #include <typeinfo>
 

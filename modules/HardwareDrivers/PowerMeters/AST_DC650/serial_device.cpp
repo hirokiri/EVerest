@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 - 2025 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 
 #include "serial_device.hpp"
 
@@ -15,7 +15,7 @@
 #include <sys/select.h>
 #include <sys/time.h>
 
-#include <fmt/core.h>
+#include <fmt/format.h>
 
 namespace {
 std::string hexdump(std::uint8_t* msg, int msg_len) {

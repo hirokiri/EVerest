@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 - 2025 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 #include "SessionLog.hpp"
 #include "everest/logging.hpp"
 #include "v2gMessage.hpp"
@@ -10,11 +10,11 @@
 #include <date/tz.h>
 #include <everest/helpers/helpers.hpp>
 #include <filesystem>
+#include <fmt/format.h>
 #include <optional>
 #include <utils/date.hpp>
 
 #include <boost/algorithm/string.hpp>
-#include <fmt/core.h>
 
 namespace module {
 

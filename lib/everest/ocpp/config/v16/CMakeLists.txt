@@ -1,12 +1,10 @@
 set(OCPP1_6_PROFILE_SCHEMAS_DIR "profile_schemas/")
-set(USER_CONFIG_FILE "user_config/user_config.json")
+set(USER_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/user_config/user_config.json")
 set(CERTS_DIR "../certs/")
 
 # find all migration files, store only the filenames by showing relative to the folder
 set(MIGRATION_FILES_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/core_migrations")
 set(MIGRATION_FILES_DEVICE_MODEL_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/../common/device_model_migrations")
-
-include(../CollectMigrationFiles.cmake)
 
 collect_migration_files(
      LOCATION ${MIGRATION_FILES_LOCATION}

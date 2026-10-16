@@ -305,6 +305,13 @@ ocpp::v2::Authorization::validate_token(const IdToken id_token, const std::optio
         }
 
         if (id_token_info.has_value()) {
+            if (id_token_info.value().status == AuthorizationStatusEnum::Accepted and
+                id_token_info.value().cacheExpiryDateTime.has_value() and
+                id_token_info.value().cacheExpiryDateTime.value() < DateTime()) {
+                EVLOG_info << "Found entry in local authorization list but expiry date passed";
+                id_token_info.value().status = AuthorizationStatusEnum::Expired;
+            }
+
             if (id_token_info.value().status == AuthorizationStatusEnum::Accepted) {
                 // C14.FR.02: If found in local list we shall start charging without an AuthorizeRequest
                 EVLOG_info << "Found valid entry in local authorization list";
@@ -313,6 +320,13 @@ ocpp::v2::Authorization::validate_token(const IdToken id_token, const std::optio
                 EVLOG_info << "Found invalid entry in local authorization list but not sending Authorize.req because "
                               "RemoteAuthorization is disabled";
                 response.idTokenInfo.status = AuthorizationStatusEnum::Unknown;
+            } else if (is_online and
+                       this->context.device_model
+                           .get_optional_value<bool>(ControllerComponentVariables::LocalAuthListDisablePostAuthorize)
+                           .value_or(false)) {
+                EVLOG_info << "Found invalid entry in local authorization list: Not sending Authorize.req because "
+                              "LocalAuthListDisablePostAuthorize is enabled";
+                response.idTokenInfo = id_token_info.value();
             } else if (is_online) {
                 // C14.FR.03: If a value found but not valid we shall send an authorize request
                 EVLOG_info << "Found invalid entry in local authorization list: Sending Authorize.req";

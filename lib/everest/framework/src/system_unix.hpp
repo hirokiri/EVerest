@@ -6,7 +6,6 @@
 #include <cstddef>
 #include <optional>
 #include <string>
-#include <vector>
 
 #include <cstdint>
 #include <sys/types.h>
@@ -16,11 +15,10 @@ namespace Everest::system {
 /// \brief Fork helper that reports exec()-failures of the child back to the parent via a pipe.
 class SubProcess {
 public:
-    /// \brief Fork a child process, optionally dropping to \p run_as_user and setting \p capabilities.
+    /// \brief Fork a child process, optionally dropping to \p run_as_user.
     /// \param run_as_user User name the child switches to; empty keeps the current user.
-    /// \param capabilities Capability names the child keeps across the user switch.
     /// \return Handle for the pipe-based exec handshake; is_child() tells which side we are on.
-    static SubProcess create(const std::string& run_as_user, const std::vector<std::string>& capabilities = {});
+    static SubProcess create(const std::string& run_as_user);
 
     /// \brief True when this handle belongs to the forked child process.
     bool is_child() const {
@@ -43,21 +41,9 @@ private:
     bool m_check_child_executed_done{false};
 };
 
-/// \brief Keep capabilities across setuid/setgid (SECBIT_KEEP_CAPS).
-/// \return true on success.
-bool keep_caps();
-
-/// \brief Add \p capabilities to the inheritable and ambient capability sets of this process.
-/// \return Empty string on success, error description otherwise.
-std::string set_caps(const std::vector<std::string>& capabilities);
-
 /// \brief Switch the real user (groups, gid, uid) of this process to \p user_name.
 /// \return Empty string on success, error description otherwise.
 std::string set_real_user(const std::string& user_name);
-
-/// \brief Combine keep_caps(), set_real_user() and set_caps() for a child process.
-/// \return Empty string on success, error description otherwise.
-std::string set_user_and_capabilities(const std::string& run_as_user, const std::vector<std::string>& capabilities);
 
 /// \brief Poll SIGINT/SIGTERM/SIGCHLD via a signalfd (signals are blocked for regular delivery).
 class SignalPolling {
@@ -65,9 +51,9 @@ public:
     SignalPolling();
 
     /// \brief Wait up to \p timeout_ms for a blocked signal (SIGINT/SIGTERM/SIGCHLD) to arrive.
-    ///        When \p extra_wakeup_fd is not -1, the poll also returns (with std::nullopt) as soon
-    ///        as that fd becomes readable, so the caller can service it without waiting for the
-    ///        timeout.
+    ///        When \p extra_wakeup_fd is not -1, the poll also returns (with std::nullopt) as soon as
+    ///        that fd becomes readable, so the caller can service it without waiting for the timeout.
+    ///        The extra fd is not read/drained here; the caller owns draining it.
     /// \return The received signal number, or std::nullopt on timeout/extra fd wakeup.
     std::optional<uint32_t> poll_signal(int timeout_ms, int extra_wakeup_fd = -1);
 

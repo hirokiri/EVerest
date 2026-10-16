@@ -38,11 +38,13 @@ struct MqttStub : public Everest::MQTTAbstraction {
     }
     void publish(const std::string& topic, const nlohmann::json& json) override {
     }
-    void publish(const std::string& topic, const nlohmann::json& json, QOS qos, bool retain = false) override {
+    void publish(const std::string& topic, const nlohmann::json& json, QOS qos, bool retain = false,
+                 bool record_retained = true) override {
     }
     void publish(const std::string& topic, const std::string& data) override {
     }
-    void publish(const std::string& topic, const std::string& data, QOS qos, bool retain = false) override {
+    void publish(const std::string& topic, const std::string& data, QOS qos, bool retain = false,
+                 bool record_retained = true) override {
     }
     void subscribe(const std::string& topic) override {
     }
@@ -262,6 +264,8 @@ struct ocppImplStub : public ocppImplBase {
                 (types::ocpp::ChangeAvailabilityRequest & request), (override));
     MOCK_METHOD(void, handle_monitor_variables, (std::vector<types::ocpp::ComponentVariable> & component_variables),
                 (override));
+    MOCK_METHOD(std::vector<types::ocpp::GetVariableResult>, handle_monitor_and_get_variables,
+                (std::vector<types::ocpp::ComponentVariable> & component_variables), (override));
 };
 
 struct session_costImplStub : public session_costImplBase {

@@ -53,22 +53,11 @@ def everest_important_packages(d):
 
     # recipes from recipes-core
     important = [
-        "everest-admin-panel",
         "everest-cmake",
         "everest-core",
-        "everest-framework",
-        "everest-libmodbus",
         "everest-node-red-flows",
         "json-schema-validator",
-        "libcbv2g",
-        "libevse-security",
-        "libfsm",
-        "libiso15118",
-        "liblog",
         "libnfc-nci",
-        "libocpp",
-        "libslac",
-        "libtimer",
     ]
 
     additional = d.getVar('EVEREST_RELEASE_PACKAGES')

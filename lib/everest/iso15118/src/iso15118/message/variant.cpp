@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2023 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 #include <iso15118/message/variant.hpp>
 
 #include <cassert>
@@ -26,6 +26,7 @@ static void handle_sap(VariantAccess& va) {
 
     if (decode_status != 0) {
         va.error = "decode_appHand_exiDocument failed with " + std::to_string(decode_status);
+        va.undecodable = true;
         return;
     }
 
@@ -45,6 +46,7 @@ static void handle_main(VariantAccess& va) {
 
     if (decode_status != 0) {
         va.error = "decode_iso20_exiDocument failed with " + std::to_string(decode_status);
+        va.undecodable = true;
         return;
     }
 
@@ -60,6 +62,10 @@ static void handle_main(VariantAccess& va) {
         insert_type(va, doc.AuthorizationReq);
     } else if (doc.AuthorizationRes_isUsed) {
         insert_type(va, doc.AuthorizationRes);
+    } else if (doc.CertificateInstallationReq_isUsed) {
+        insert_type(va, doc.CertificateInstallationReq);
+    } else if (doc.CertificateInstallationRes_isUsed) {
+        insert_type(va, doc.CertificateInstallationRes);
     } else if (doc.ServiceDiscoveryReq_isUsed) {
         insert_type(va, doc.ServiceDiscoveryReq);
     } else if (doc.ServiceDiscoveryRes_isUsed) {
@@ -96,6 +102,7 @@ static void handle_dc(VariantAccess& va) {
 
     if (decode_status != 0) {
         va.error = "decode_iso20_dc_exiDocument failed with " + std::to_string(decode_status);
+        va.undecodable = true;
         return;
     }
 
@@ -131,6 +138,7 @@ static void handle_ac(VariantAccess& va) {
 
     if (decode_status != 0) {
         va.error = "decode_iso20_dc_exiDocument failed with " + std::to_string(decode_status);
+        va.undecodable = true;
         return;
     }
 
@@ -154,6 +162,7 @@ static void handle_ac_iec_der(VariantAccess& va) {
 
     if (decode_status != 0) {
         va.error = "decode_iso20_ac_der_iec_exiDocument failed with " + std::to_string(decode_status);
+        va.undecodable = true;
         return;
     }
 
@@ -177,6 +186,7 @@ static void handle_ac_sae_der(VariantAccess& va) {
 
     if (decode_status != 0) {
         va.error = "decode_iso20_ac_der_sae_exiDocument failed with " + std::to_string(decode_status);
+        va.undecodable = true;
         return;
     }
 
@@ -195,11 +205,15 @@ static void handle_ac_sae_der(VariantAccess& va) {
 
 Variant::Variant(io::v2gtp::PayloadType payload_type, const io::StreamInputView& buffer_view) {
 
+    if (buffer_view.payload == nullptr or buffer_view.payload_len == 0) {
+        error = "empty EXI payload";
+        undecodable = true;
+        logf_error("Failed due to: %s\n", error.c_str());
+        return;
+    }
+
     VariantAccess va{
-        get_exi_input_stream(buffer_view),
-        this->data,
-        this->type,
-        this->error,
+        get_exi_input_stream(buffer_view), this->data, this->type, this->error, this->undecodable,
     };
 
     if (payload_type == PayloadType::SAP) {
@@ -215,7 +229,8 @@ Variant::Variant(io::v2gtp::PayloadType payload_type, const io::StreamInputView&
     } else if (payload_type == io::v2gtp::PayloadType::Part20DerSae) {
         handle_ac_sae_der(va);
     } else {
-        logf_warning("Unknown type");
+        error = "unsupported V2GTP payload type";
+        undecodable = true;
     }
 
     if (data != nullptr) {
@@ -223,6 +238,10 @@ Variant::Variant(io::v2gtp::PayloadType payload_type, const io::StreamInputView&
         assert(type != Type::None);
     } else {
         logf_error("Failed due to: %s\n", error.c_str());
+    }
+
+    if (type == Type::AuthorizationReq or type == Type::CertificateInstallationReq) {
+        exi_payload.assign(buffer_view.payload, buffer_view.payload + buffer_view.payload_len);
     }
 }
 

@@ -147,7 +147,10 @@ struct CB_COMPILER_ATTR_PACK CbDebugUartLinePacket {
 // more entries on the MCU; no protocol/host change is needed as long as the entry count stays
 // within CB_TELEMETRY_MAX_ENTRIES.
 #define CB_TELEMETRY_NAME_LEN 12   // max name length including the NUL terminator (<=11 chars)
-#define CB_TELEMETRY_MAX_ENTRIES 32 // max entries carried in one IO packet
+// Raising this is a breaking change: the host rejects a whole CbIoPacket whose length or entry
+// count exceeds what it was built for, so GPIO and ADC stop flowing too, not just the extra
+// telemetry. Both sides must be rebuilt together. CB_MAX_CB_STRUCT_SIZE caps this at 68.
+#define CB_TELEMETRY_MAX_ENTRIES 64 // max entries carried in one IO packet
 
 struct CB_COMPILER_ATTR_PACK CbTelemetryEntry {
 	char name[CB_TELEMETRY_NAME_LEN]; // NUL-terminated ASCII; unused tail bytes are 0
@@ -177,8 +180,68 @@ struct CB_COMPILER_ATTR_PACK CbIoPacket {
 	CbTelemetry telemetry; // Generic unstructured telemetry; variable length, rides along, never triggers sends
 };
 
+// --- Session ownership (cb-session-v1, protocol v5) -------------------------
+// The management heartbeat defines a host "session". The MCU serves exactly one
+// session at a time; every other connection's liveness (UDP slots, UART TCP)
+// derives from it. A heartbeat carrying an unknown session_id is a takeover
+// request, decided by the MCU as follows:
+//   - no current owner, or same source IP as the owner  -> take over immediately
+//     (the tool-restart case: the old process on that PC is provably gone)
+//   - owner silent longer than the takeover grace       -> take over
+//   - owner healthy, different IP, FORCE flag set       -> take over (operator
+//     override, log loudly)
+//   - owner healthy, different IP, no FORCE             -> reject: the reply
+//     carries CBSS_RejectedBusy plus the owner's identity so the second host
+//     can report *who* has the device instead of timing out.
+// On an accepted takeover the MCU resets all UDP connection slots and closes
+// all UART TCP connections, so the new session connects instantly.
+// This is cooperative ownership on a trusted management LAN, not authentication.
+
+#define CB_SESSION_FLAG_FORCE_TAKEOVER 0x01
+
+// Grace: a different-IP takeover without FORCE is only accepted once the current
+// owner has been silent this long (default heartbeat interval is 1 s).
+#define CB_SESSION_TAKEOVER_GRACE_MS 2500
+
+enum class CbSessionStatus : uint8_t {
+	CBSS_Accepted = 0,     // sender owns the session; reply data is valid
+	CBSS_RejectedBusy = 1, // another session owns the MCU; only the session/owner fields are valid
+};
+
+// The data link technology the MCU drives. The MCU knows this from the hardware variant
+// (strapping), so the host can use it as a runtime cross-check of its own configuration.
+typedef enum _CbLinkTechnology : uint8_t {
+	CB_LINK_TECH_UNKNOWN = 0, CB_LINK_TECH_PLC = 1, CB_LINK_TECH_SPE = 2,
+} CbLinkTechnology;
+
+// MCU -> host: state of the MCU's own data-link PHY. Not a message of its own -- it is embedded
+// in CbHeartbeatReplyPacket and therefore rides along with every heartbeat reply, always and
+// unconditionally. A snapshot taken when the reply is built, so it is at most one heartbeat
+// interval stale; transition_count exposes any phy_operational/plca_engaged flap that started
+// and ended between two replies. The staleness is by design: these transitions are rare (chip
+// start, error-recovery resets), are not correlated with plug-in events, and every consumer runs
+// seconds-scale timers.
+//
+// This reports ONLY what the MCU's own PHY knows. In particular it is NOT an "EV present" or
+// "EV alive" signal: 10BASE-T1S has no autoneg/link training (mandated off by V2G10-019/-021)
+// and on the PLCA coordinator (the SECC, station 0) PLCA_STS.PST asserts as soon as PLCA is
+// enabled. Peer presence/liveness is host-side policy (basic signalling + rx activity).
+//
+// Only the two_wire (10BASE-T1S / LAN8650) backend reports real values. The HomePlug PLC
+// backends report technology = CB_LINK_TECH_PLC with all other fields 0; the host must not
+// derive a link/carrier decision from a CB_LINK_TECH_PLC report.
+struct CB_COMPILER_ATTR_PACK CbLinkStatusPacket {
+	uint8_t  technology;       // CbLinkTechnology
+	uint8_t  phy_operational;  // 0/1 - chip initialised and configured, not in error-recovery reset
+	uint8_t  plca_engaged;     // 0/1 - PLCA cycle running (PLCA_STS.PST); on the SECC this does NOT imply a peer is present
+	uint8_t  reserved;         // 0 (future: SQI; encoding 0 = not measured, 1-8 = SQI+1)
+	uint32_t transition_count; // phy_operational/plca_engaged edges since firmware boot
+};
+
 struct CB_COMPILER_ATTR_PACK CbHeartbeatPacket {
     CbConfig module_config;
+    uint32_t session_id;   // random per tool instance, != 0 (0 = legacy, always accepted like v4)
+    uint8_t session_flags; // CB_SESSION_FLAG_*
 };
 
 struct CB_COMPILER_ATTR_PACK CbHeartbeatReplyPacket {
@@ -197,6 +260,18 @@ struct CB_COMPILER_ATTR_PACK CbHeartbeatReplyPacket {
 	int16_t temperature_modem_C;
 	int16_t temperature_PT1000_C[2];
 	int32_t uptime_ms;
+	uint8_t session_status;    // CbSessionStatus
+	uint32_t owner_session_id; // session currently served by the MCU
+	uint32_t owner_ip_v4;      // owner IPv4 (host byte order) when rejected; 0 if none or IPv6
+	CbLinkStatusPacket link_status; // SPE/PLC PHY state, always populated (see CbLinkStatusPacket)
+	// The role the MCU is actually running, as opposed to the CbConfig.cb_type the host asked
+	// for. On CB_MCS_EVSE boards this is the value latched from the first config heartbeat after
+	// boot (see cb_type); a later differing cb_type is logged and ignored, so the host detects the
+	// mismatch by comparing what it configured against what is reported here. On CCS boards the
+	// role is strapping-coded and cb_type is not authoritative, so this reports the strapped role
+	// (CB_CCS_EV_LU -> 1, every other variant -> 0) and a contradicting cb_type is likewise only
+	// logged.
+	uint8_t latched_cb_type; // 0 = EVSE, 1 = EV, 255 = not yet latched (pre-config)
 };
 
 struct CB_COMPILER_ATTR_PACK CbFirmwareStart {

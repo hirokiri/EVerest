@@ -10,14 +10,8 @@ loading this module as part of the EVerest configuration. The module leverages l
 
 OCPPmulti is the recommended OCPP module for new EVerest configurations. It deprecates the separate
 :ref:`OCPP <everest_modules_OCPP>` (OCPP 1.6) and :ref:`OCPP201 <everest_modules_OCPP201>` (OCPP 2.0.1 / 2.1)
-modules.
-
-.. warning::
-
-   This module is currently **experimental**: configuration parameters and its
-   integration in EVerest may change without further notice. It is exempt from
-   the stability guarantees and the deprecation period of the EVerest public
-   API until promoted to stable (see :ref:`project-experimental-components`).
+modules; see :ref:`Migrate to the Combined OCPP Module <howto-ocpp-storage-migration>` for moving an
+existing deployment.
 
 In this document, **OCPP 2.x** refers to OCPP 2.0.1 and OCPP 2.1 collectively.
 
@@ -65,6 +59,11 @@ Compared to the deprecated :ref:`OCPP <everest_modules_OCPP>` (1.6) module, two 
 * ``PublishChargingScheduleIntervalS`` is now ``CompositeScheduleIntervalS``
 * ``PublishChargingScheduleDurationS`` is now ``RequestCompositeScheduleDurationS``
 
+Compared to the :ref:`OCPP201 <everest_modules_OCPP201>` module, ``CustomMrecErrorMapPath`` is replaced by
+``CustomErrorMappingPath``, which takes a file in a different format (see
+:ref:`error reporting <handwritten_ocppmulti_error-reporting>`). An override ``"<error type>": "<techCode>"`` of the
+old file becomes ``"<error type>": {"v2": {"tech_code": "<techCode>"}}``.
+
 External websocket control via MQTT
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -75,6 +74,19 @@ these MQTT topics (the message payload is ignored):
 * ``everest_api/ocpp/cmd/disconnect``: disconnect the OCPP websocket from the CSMS
 
 This is intended for debug and testing purposes.
+
+Network preparation via the system provider
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+If ``DelegateNetworkConfigurationToSystem`` is set to ``true``, the module asks the ``system`` provider to prepare the network
+(**configure_network**) before every CSMS connection attempt and binds the websocket to the interface address the
+provider returns; see :ref:`Network connection configuration <handwritten_ocppmulti_network-connection-configuration>`.
+The provider must answer promptly (``NotSupported`` is acceptable). With the :ref:`system_API <everest_modules_system_API>`
+module the external client must reply to ``e2m/configure_network``; a client that stays silent blocks every
+connection attempt until the request times out, so the charge point never reaches the CSMS.
+
+With the default ``false`` no request is sent and the connection is established as with the
+:ref:`OCPP201 <everest_modules_OCPP201>` module (``IFace`` handling included).
 
 Device model configuration via component configs
 =================================================
@@ -143,7 +155,11 @@ network profile selectors, or the ``SecurityCtrlr`` connection fallbacks ``Ident
 those are managed via the standardized OCPP 1.6 keys with their reboot/reconnect semantics, and a mapping file
 containing such a target is rejected at startup. OCPP 1.6
 keys without a standardized device model counterpart are kept in a dedicated ``OCPP16LegacyCtrlr`` component, whose
-``NumberOfConnectors`` value is automatically patched to the actual number of connected EVSEs.
+``NumberOfConnectors`` value is automatically patched to the actual number of connected EVSEs. This component is
+required for OCPP 2.x operation as well: the device model is shared between all supported OCPP versions so that the
+station can switch between OCPP 1.6 and OCPP 2.x seamlessly, which requires the full set of components for every
+version to be present. If ``standardized/OCPP16LegacyCtrlr.json`` is absent from ``DeviceModelConfigPath``, a
+built-in default schema for it is injected automatically.
 
 .. _handwritten_ocppmulti_network-profiles-ocpp16:
 
@@ -184,10 +200,11 @@ previously used with OCPP 2.x, which writes back the negotiated version; OCPP 1.
 leaving the charge point unable to connect. The same fallback applies when the active slot's profile is
 incomplete; in OCPP 2.x an incomplete slot is simply skipped.
 
-The ``interface_address`` returned by the ``system`` provider's **configure_network** *replaces* the static
-``Internal``/``IFace`` configuration key when binding the websocket - including clearing it when the provider
-answers ``Ready`` or ``NotSupported`` without an address. Since this module always performs the configure_network
-round-trip, ``IFace`` is effectively not used on successful attempts.
+With ``DelegateNetworkConfigurationToSystem`` set to ``true``, the ``interface_address`` returned by the ``system`` provider's
+**configure_network** *replaces* the static ``Internal``/``IFace`` configuration key when binding the websocket -
+including clearing it when the provider answers ``Ready`` or ``NotSupported`` without an address, so ``IFace`` is
+effectively not used on successful attempts. With the default ``false`` no configure_network round-trip is performed
+and ``IFace`` is handled as in the OCPP201 module.
 
 The legacy JSON configuration backend (OCPP 1.6 without a device model, as used by the ``OCPP`` module) is
 unaffected by this and keeps the previous single-profile behavior.
@@ -416,6 +433,14 @@ Shares data between ISO 15118 and OCPP, e.g. **set_get_certificate_response** to
 Plug&Charge EV contract certificate installation. Variables received include **iso15118_certificate_request** (to
 trigger the corresponding request) and **charging_needs**.
 
+Each mapped connection provisions an **ISO15118Ctrlr** component for the served EVSE. Its **Enabled** variable is
+derived from the ``hlc_capable`` field reported by the serving :ref:`EvseManager <everest_modules_EvseManager>` via
+**get_evse**, collapsed per EVSE by **any** of its connectors, since the session runs on whichever plug can carry it.
+**Enabled** is provisioned ``ReadOnly``, so it states a static capability of the station rather than offering a CSMS
+runtime control: a station with an extensions_15118 provider mapped but HLC switched off now reports ``false`` where
+it previously reported a hardcoded ``true``. A provider mapped to an EVSE id the station does not serve is logged as
+an error and provisions no **ISO15118Ctrlr** component for that id.
+
 Requires: grid_support (0-128)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -431,10 +456,20 @@ The module maintains a per-EVSE snapshot of the DER directives currently applied
 EVSE's connection through the **set_active_directives** command. When libocpp applies, schedules, clears, supersedes, or
 expires a DER control, the snapshot is rebuilt and re-sent for every registered EVSE on its own connection.
 
-At startup the module pre-provisions an ``ACDERCtrlr`` or ``DCDERCtrlr`` device-model component (chosen by the EVSE's
-energy-transfer modes) for every DER-capable EVSE, so no static device-model JSON is required for the DER controllers.
-Any EVSE without a wired grid_support connection has its DER controller forced to ``Available="false"`` (preserving a
-CSMS-written ``"false"`` and its source), so the CSMS does not see DER as available after the wiring is removed.
+At startup the module pre-provisions an ``ACDERCtrlr`` or ``DCDERCtrlr`` device-model component for every EVSE with a
+wired grid_support connection, so no static device-model JSON is required for the DER controllers. Which of the two an
+EVSE gets follows the charge mode the serving EvseManager reports through ``get_evse``. Both facts are static and
+available before the device model is built, so the decision is made once, at provisioning.
+
+The component is deliberately not derived from the EVSE's supported energy-transfer modes: those are published
+asynchronously and are not waited on, so an EVSE whose modes had not arrived in time received no DER controller at all
+for the lifetime of the process and answered every DER message ``UnknownComponent``.
+
+The decision fails closed. An EVSE with no grid_support connection, or one whose EvseManager reports no charge mode,
+gets no DER controller, and the reason is logged. Whichever component was *not* selected is forced to
+``Available="false"`` and ``Enabled="false"`` after provisioning, since a component written by an earlier boot is
+otherwise retained in the device-model database; the forcing only clears a persisted ``"true"``, so a CSMS-written
+``"false"`` and its source survive an unwire/rewire cycle.
 
 The device declares its inverter capability through the ``capability`` variable. The module stores the capability, writes
 its config variables (``ModesSupported`` and the DC nameplate values) through the device model, and republishes the
@@ -443,7 +478,10 @@ module rolls back to the last accepted capability; an EVSE whose very first capa
 
 The CSMS may write the ``Enabled`` variable (``ReadWrite``). Writing ``Enabled="false"`` makes the module push an empty
 directive replacement set to that EVSE, so the device clears the EV's curves; writing ``Enabled="true"`` republishes the
-filtered active set for that EVSE. A CSMS-written ``Enabled`` persists across reboots and is restored at boot.
+filtered active set for that EVSE. A CSMS-written ``Enabled`` persists across reboots and is restored at boot. The
+curve-clearing effect applies to an EVSE configured for the ISO 15118-20 ``AC_DER_IEC`` annex: the push itself always
+happens, but the device's directive relay maps IEC control functions only, so nothing reaches a session running the
+``AC_DER_SAE`` annex.
 
 The device reports grid event faults through the ``alarm`` variable, forwarded to the CSMS as a **NotifyDERAlarm.req**.
 Alarms raised before the backend has accepted a capability for any EVSE are buffered and delivered once the first
@@ -451,8 +489,11 @@ capability is accepted; if no capability is ever accepted, the buffered alarms a
 received before the charge point is initialized are queued and replayed once the charge point is ready.
 
 In addition to enabling the DER device-model component, the module asserts DER availability to the matching EvseManager
-via its **set_der_available** command, so that EvseManager can advertise the corresponding ISO 15118-20 DER energy
-transfer modes. If the device model rejects the capability, DER availability is withdrawn instead.
+via its **set_der_available** command, so that EvseManager can advertise an ISO 15118-20 AC DER energy transfer mode.
+Which annex is advertised (``AC_DER_IEC`` or ``AC_DER_SAE``, or neither) is EvseManager's own
+``iso15118_der_flavor`` config choice, not something OCPP selects; it defaults to ``NONE``, so asserting
+availability alone does not advertise a DER service. If the device model rejects the capability, DER availability is
+withdrawn instead.
 
 The configuration parameter **GridSupportHeartbeatS** sets the interval (in seconds) at which the current active
 directive set is re-sent for every registered EVSE. A value of ``0`` disables the heartbeat; the set is then sent only
@@ -491,12 +532,15 @@ for production use without modification). Used to execute and control system-wid
 * **set_system_time** to apply the time communicated by the CSMS
 * **get_boot_reason** for the boot notification at startup
 * **configure_network** to prepare the network for a connection attempt on a network profile slot (see
-  :ref:`Network connection configuration <handwritten_ocppmulti_network-connection-configuration>`); a provider
-  without special network handling answers ``NotSupported``
+  :ref:`Network connection configuration <handwritten_ocppmulti_network-connection-configuration>`); only called
+  when ``DelegateNetworkConfigurationToSystem`` is ``true``; a provider without special network handling answers
+  ``NotSupported``
 
 The **log_status** and **firmware_update_status** variables are received to report the corresponding status
-notifications to the CSMS, and **configure_network_status** reports the asynchronous outcome of
-**configure_network** requests.
+notifications to the CSMS, and **configure_network_status** (subscribed only when ``DelegateNetworkConfigurationToSystem``
+is ``true``) reports the asynchronous outcome of **configure_network** requests.
+
+.. _handwritten_ocppmulti_error-reporting:
 
 Error reporting
 ===============
@@ -505,15 +549,28 @@ The ``enable_global_errors`` flag of this module is set in its manifest, so the 
 errors reported by other modules in the same EVerest configuration.
 
 Error reporting follows the Minimum Required Error Codes (MRECs, https://inl.gov/chargex/mrec/). The module maps
-EVerest error types to MREC techCodes using a built-in mapping table. ``CustomMrecErrorMapPath`` can point to a JSON
-file whose entries overwrite the built-in defaults; note that this override is currently only applied on the OCPP 2.x
-error path. OCPP 1.6 uses a separate built-in MREC table that ``CustomMrecErrorMapPath`` does not affect.
+EVerest error types to MREC codes using a built-in mapping table shared by OCPP 1.6 and 2.x.
+
+``CustomErrorMappingPath`` can point to a custom error mapping file, following
+``lib/everest/ocpp_module_common/schemas/custom_error_mapping.schema.json``. Its keys are EVerest error types,
+optionally refined by a sub type as ``<type>#<sub_type>``. The file is an overlay on the built-in mapping: every
+error is first converted as described below, then the fields its entry sets replace the converted ones. The ``v16``
+section overrides OCPP 1.6 fields and the ``v2`` section OCPP 2.x fields; every field an entry leaves out keeps its
+built-in value, so without a file errors are reported exactly as described below. **evse_manager/Inoperative**
+cannot be mapped. How to write, configure and check such a file is described in
+:ref:`Customize How Errors Reach the CSMS <howto-ocpp-custom-error-mapping>`.
+
+A misconfigured file never stops the module. An entry that breaks the schema or uses an undeclared error type is
+logged as a warning and ignored, so the built-in mapping applies to its errors. Unknown placeholders, text longer than
+the OCPP field and, for OCPP 2.x, components or variables the device model does not contain are only warned about. A
+missing or malformed file is ignored as a whole.
 
 For both protocol generations, only errors of the special type **evse_manager/Inoperative** are reported as faults
 (i.e. lead to a **StatusNotification.req** with status **Faulted**); this type indicates that the EVSE is not
 available for energy transfer. The EVSE/connector an error is reported for is derived from the EVerest mapping of the
-error's origin; without a mapping, it is reported for the whole charging station (connector 0). All other errors are
-reported without changing the connector status, in a version-specific way.
+error's origin; without a mapping, or with EVSE 0, it is reported for the whole charging station (connector 0). The
+custom error mapping file cannot change this. All other errors are reported without changing the connector status, in
+a version-specific way.
 
 OCPP 1.6
 ^^^^^^^^
@@ -521,13 +578,18 @@ OCPP 1.6
 Errors are reported via the error fields of additional **StatusNotification.req** messages. Each error is converted
 as follows:
 
-* If the EVerest error type has a (built-in) MREC mapping, ``errorCode`` is taken from that mapping, ``vendorId`` is
-  set to the MREC vendor id, and ``vendorErrorCode`` carries the MREC techCode. (The OCPP 1.6 path uses a fixed
-  built-in table; ``CustomMrecErrorMapPath`` is not applied here.)
-* Otherwise, if it maps to a standard OCPP 1.6 error code, ``errorCode`` is set accordingly.
+* If the EVerest error type has a built-in MREC mapping, ``errorCode`` is taken from that mapping,
+  ``vendorId`` is set to the MREC vendor id, and ``vendorErrorCode`` carries the MREC techCode. The error message is
+  written to ``info`` instead of ``vendorId``, truncated to 50 characters; if the error was raised without a message,
+  ``info`` is omitted.
+* Otherwise, if it maps to a standard OCPP 1.6 error code, ``errorCode`` is set accordingly and ``vendorId`` carries
+  the error message (up to 255 characters).
 * Otherwise, ``errorCode`` is ``OtherError``, ``info`` carries the error origin, ``vendorId`` the error message
   (up to 255 characters, the largest field), and ``vendorErrorCode`` a code derived from the EVerest error type
   (``info`` and ``vendorErrorCode`` are limited to 50 characters).
+
+The ``v16`` section of the error's custom error mapping entry then replaces each of ``errorCode``, ``vendorId``,
+``vendorErrorCode`` and ``info`` that it sets.
 
 OCPP 1.6 limitations: individual errors cannot be cleared selectively via **StatusNotification.req**, and, deviating
 from MREC, simultaneous errors are reported in one message per error instead of a single semicolon-separated
@@ -543,12 +605,81 @@ In contrast to OCPP 1.6, error information is not transmitted in **StatusNotific
 status **Faulted** for the Inoperative case above). All other errors are reported via **NotifyEvent.req**, whose
 **eventData** structure requires mapping each error to a component-variable combination:
 
-* **ChargingStation** if the error origin has no EVSE mapping
+* **ChargingStation**, without an EVSE, if the error origin has no mapping or is mapped to EVSE 0
 * **EVSE** otherwise; when a connector is also mapped, its id is carried in the component's ``connectorId`` (the
   component name stays **EVSE**, a dedicated **Connector** component is not used yet)
 
-The variable is constantly set to **Problem** for now; a more fine-grained mapping of errors to component-variable
-combinations may be added in the future.
+The variable is set to **Problem**. A ``v2`` section of a custom error mapping entry can name another component and
+variable, but the component's ``evse`` (EVSE id and ``connectorId``) always follows the EVerest mapping of the error's
+origin. The only exception is the **ChargingStation** component, which is reported without an EVSE even when the
+raising module is mapped to one. A component that needs an EVSE or connector, such as **EVSE** or **Connector**, is
+only reported completely for errors of modules whose mapping provides them.
+
+The remaining **eventData** properties are filled as follows:
+
+* ``techCode`` is set to the MREC techCode if the EVerest error type has an MREC mapping, and to the EVerest error
+  type itself otherwise.
+* ``techInfo`` is set to the message of the EVerest error, truncated to 500 characters. If the error was raised
+  without a message, the description of the error type is sent instead.
+* ``severity`` is only reported when the ``v2`` section of the error's custom error mapping entry sets it, and only
+  over OCPP 2.1. It is a static value per entry, unrelated to the severity the EVerest error is raised with.
+* ``actualValue`` is ``"true"`` when the error is raised and ``"false"`` when it is cleared. The ``cleared``
+  property is set accordingly.
+
+The ``v2`` section of the error's custom error mapping entry then replaces each of ``techCode``, ``techInfo``,
+``severity`` and the component and variable names and instances that it sets. Since ``actualValue`` is always ``"true"`` or
+``"false"``, an entry should name a boolean variable.
+
+.. _handwritten_ocppmulti_error-placeholders:
+
+Placeholders in custom error mapping texts
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``vendor_id``, ``vendor_error_code`` and ``info`` (OCPP 1.6) and ``tech_code`` and ``tech_info`` (OCPP 2.x) fields of
+a custom error mapping entry may contain ``${name}`` placeholders, which are replaced by fields of the reported EVerest
+error:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Placeholder
+     - Replaced by
+   * - ``${type}``
+     - Error type, for example ``evse_board_support/MREC3HighTemperature``
+   * - ``${sub_type}``
+     - Error sub type
+   * - ``${message}``
+     - Message the error was raised with
+   * - ``${description}``
+     - Description the error was raised with
+   * - ``${vendor_id}``
+     - Vendor id of the error
+   * - ``${origin}``
+     - Module id, implementation id and mapping of the raising module, as one string
+   * - ``${origin_module}``
+     - Module id of the raising module
+   * - ``${origin_implementation}``
+     - Implementation id of the raising module
+   * - ``${evse}``
+     - EVSE id of the raising module's mapping; empty without a mapping
+   * - ``${connector}``
+     - Connector id of the raising module's mapping; empty without a mapping or connector
+   * - ``${severity}``
+     - Severity the EVerest error was raised with: ``Low``, ``Medium`` or ``High``. Unrelated to the ``severity``
+       field of the entry
+   * - ``${state}``
+     - ``Active``, ``ClearedByModule`` or ``ClearedByReboot``
+   * - ``${timestamp}``
+     - Time the error was raised, RFC 3339
+   * - ``${uuid}``
+     - Unique id of the error instance
+
+Any other name, and a ``${`` without a closing ``}``, is warned about and sent as written. Substituted values are not
+scanned for placeholders again. The character limits of the OCPP fields, 255 for ``vendorId``, 500 for ``techInfo`` and
+50 for the others, apply after substitution, so the text around the placeholders should leave room for the values.
+
+For example, ``"tech_info": "${severity} ${type} on EVSE ${evse}: ${message}"`` is reported as
+``High evse_board_support/MREC3HighTemperature on EVSE 1: Temperature above limit``.
 
 .. _handwritten_ocppmulti_suspend-reason-reporting:
 
@@ -591,6 +722,8 @@ energy management through the optional ``evse_energy_sink`` requirements (interf
 Each composite limit is communicated via a separate sink, including the composite schedule for EVSE id 0
 (representing the whole charging station). For a charging station with two EVSEs, three modules implementing
 ``external_energy_limits`` need to be connected: one representing EVSE id 0 and two representing the actual EVSEs.
+If at least one sink is connected, the module warns once at startup for every EVSE id without one; composite
+schedules for those EVSE ids are not applied. Without any connected sink, external limits are skipped silently.
 
 📌 **Note:** An EVSE mapping must be configured for each module connected via the ``evse_energy_sink`` connection, so
 the module can identify which requirement to use when communicating the limits. See
@@ -607,17 +740,51 @@ and shared.
 Certificate management
 ======================
 
-Two leaf certificates are managed by the OCPP communication enabled by this module:
+Up to three leaf certificates are managed by the OCPP communication enabled by this module:
 
 * CSMS client certificate (used for mTLS with security profile 3)
-* SECC server certificate (server certificate for ISO 15118)
+* SECC server certificate for ISO 15118-2 (TLS 1.2, ``prime256v1`` key; OCPP certificateType
+  **V2GCertificate**)
+* SECC server certificate for ISO 15118-20 (TLS 1.3, ``secp521r1`` key; OCPP 2.1 certificateType
+  **V2G20Certificate**)
+
+The two SECC certificates are distinct: ISO 15118-2 and ISO 15118-20 mandate incompatible key algorithms, so one
+leaf cannot serve both protocol generations. Both are stored in the ``EvseSecurity`` SECC leaf directory and are
+told apart by their key algorithm; their sub-CA certificates arrive with the signed chain in **CertificateSigned.req**
+and their roots -- which may or may not be the same for the two -- are installed into the V2G root bundle via
+**InstallCertificate.req** (``V2GRootCertificate``).
+
+The subject of a SECC CSR is built from **ISO15118Ctrlr.CountryName** (C), **ISO15118Ctrlr.OrganizationName** (O)
+and **ISO15118Ctrlr.SeccId** (CN), plus the domain component ``CPO`` for the -2 leaf (ISO 15118-2 Table F.2) or
+``CSO`` for the -20 leaf (ISO 15118-20 Table B.5). The requested keyUsage is critical ``digitalSignature`` for the -2
+leaf and critical ``digitalSignature, keyAgreement`` for the -20 leaf, as the same tables specify. ISO 15118-20 requires the -20 CN to be a SECCID per its
+Annex C.3 (country code, operator ID, ``S``, controller ID, check digit; at least 39 characters); since one
+``SeccId`` serves both leafs, use a SECCID for it.
 
 In OCPP 2.x, 60 seconds after the first **BootNotification.req** has been accepted by the CSMS, the charging station
-checks whether these certificates are missing or expired and, if so, initiates a **SignCertificate.req** towards the
-CSMS. For the CSMS leaf certificate this is only done when security profile 3 is used; for the SECC leaf certificate
-only when Plug&Charge is enabled via **ISO15118Ctrlr.V2GCertificateInstallationEnabled**. Expiry is re-checked every
-12 hours. In OCPP 1.6, the equivalent functionality is provided via the OCPP 1.6 security whitepaper extension and
-the Plug&Charge extension implemented via **DataTransfer.req** messages.
+checks whether these certificates are missing or expire within 30 days and, if so, initiates a
+**SignCertificate.req** towards the CSMS (a missing certificate is requested the same way as an expiring one, which
+is how the initial certificate is provisioned). For the CSMS leaf certificate this is only done when security
+profile 3 is used; for the ISO 15118-2 SECC leaf only when Plug&Charge is enabled via
+**ISO15118Ctrlr.V2GCertificateInstallationEnabled**, which per OCPP 2.1 governs use cases A02 and A03 for both SECC
+leafs; the ISO 15118-20 SECC leaf is additionally only maintained when the connection is OCPP 2.1, because a 2.0.1
+CSMS does not know **V2G20Certificate**. Expiry is re-checked every 12 hours
+(``V2GCertificateExpireCheckIntervalSeconds``); the two SECC leafs are checked and renewed independently, and
+because only one **SignCertificate.req** may be outstanding, when both are due one is requested per check,
+alternating which leaf goes first so that a leaf the CSMS never issues does not block the other. On OCPP 2.1 every
+**SignCertificate.req** carries a ``requestId`` and a
+**CertificateSigned.req** whose ``requestId`` does not belong to the outstanding request is rejected (A02.FR.24 /
+A02.FR.26); a SECC leaf request also names the V2G root it shall be issued under in ``hashRootCertificate``
+(A02.FR.27). Candidates are the installed V2G roots whose key algorithm matches the requested leaf (``secp521r1`` or
+``Ed448`` roots for the -20 leaf, all others for the -2 leaf); among them the root of the installed leaf is named, or
+the only candidate, and the field is omitted when neither identifies one. A **CertificateSigned.req** that omits
+``certificateType`` is installed as the type of the outstanding request (the CSMS is only recommended to echo the
+type). The CSMS can also trigger either request via **TriggerMessage.req** (``SignV2GCertificate`` /
+``SignV2G20Certificate``). A newly installed SECC leaf is picked up by the ``Evse15118D20`` module without a restart
+via the ``certificate_store_update`` event. In OCPP 1.6, the equivalent
+functionality for the CSMS and ISO 15118-2 SECC certificates is provided via the OCPP 1.6 security whitepaper
+extension and the Plug&Charge extension implemented via **DataTransfer.req** messages; the ISO 15118-20 SECC leaf is
+not managed over OCPP 1.6.
 
 In addition, the charging station periodically (by default every seven days) updates the OCSP responses of the sub-CA
 certificates of the V2G certificate chain. The cached OCSP response can be used as part of the ISO 15118 TLS
@@ -632,8 +799,9 @@ OCPP configuration can be read, written and monitored through three channels:
   ``SetVariables`` / ``SetVariableMonitoring`` in OCPP 2.x,
   ``GetConfiguration`` / ``ChangeConfiguration`` in OCPP 1.6.
 - **EVerest modules**: require the ``ocpp`` interface and call
-  ``call_get_variables`` / ``call_set_variables`` / ``call_monitor_variables``;
-  subscribe ``event_data`` for monitor notifications.
+  ``call_get_variables`` / ``call_set_variables`` / ``call_monitor_variables``
+  / ``call_monitor_and_get_variables``; subscribe ``event_data`` for monitor
+  notifications.
 - **External integrations** (web interface, configuration tools, vendor cloud
   agents): the :ref:`ocpp_consumer_API
   <everest_modules_handwritten_ocpp_consumer_API>` module, which republishes
@@ -682,6 +850,20 @@ are **currently not** carried on this interface; its result has no ``statusInfo`
 in either protocol mode. A rejected write therefore has to be diagnosed from the
 module log, which names the reason code and the offending component/variable.
 
+``ReadOnly`` mutability constrains the CSMS, not these channels: ``set_variables``
+also writes ``ReadOnly`` variables, e.g. ``InternalCtrlr``/``ChargePointModel``,
+in both protocol modes. In OCPP 1.6 mode, keys whose value the stack computes stay
+``Rejected``, e.g. ``NumberOfConnectors``, ``SupportedFeatureProfiles`` or
+``SupportedMeasurands``. ``CentralSystemURI`` is one of them: change the CSMS URL
+through ``NetworkConfiguration``/``OcppCsmsUrl`` of a slot that is not in use, as in
+OCPP 2.x. Most ``ReadOnly`` values are only read at boot or on (re)connect, so an
+accepted write takes effect then.
+
+The CSMS remains bound by ``ReadOnly``: a ``ChangeConfiguration.req`` for a
+``ReadOnly`` key is ``Rejected``. ``CentralSystemURI`` is always ``ReadOnly`` in
+OCPP 1.6 mode, and OCPP 1.6 has no ``SetNetworkProfile``, so a 1.6 CSMS cannot
+change the CSMS URL.
+
 Addressing rules:
 
 - Standard OCPP 2.x variables: their standard component (``OCPPCommCtrlr``,
@@ -719,7 +901,9 @@ plus APN settings) with slot 2 as a wired fallback (``"Wired0"``).
 
 A slot is only usable once its profile is complete: ``OcppCsmsUrl``,
 ``SecurityProfile``, ``OcppInterface``, ``OcppTransport`` and ``MessageTimeout``
-are all mandatory, and a slot missing any of them is skipped. The example
+are all mandatory, and a slot missing any of them is skipped. ``Identity`` and
+``BasicAuthPassword`` are optional per slot: when empty, the ``SecurityCtrlr``
+global of the same name is used (B09.FR.16). The example
 ``NetworkConfiguration_1.json`` carries defaults for everything except the URL
 (``SecurityProfile`` ``1``, ``OcppInterface`` ``"Wired0"``, ``OcppTransport``
 ``"JSON"``, ``MessageTimeout`` ``30``), so slot 1 only needs an
@@ -765,16 +949,25 @@ Failover between slots
 """"""""""""""""""""""
 
 Slots are tried in priority order, and the list wraps around. A slot is skipped
-when the ``system`` provider's **configure_network** answers
-``Failed``/``Rejected`` (or does not respond within
-``InternalCtrlr``/``NetworkConfigTimeout`` seconds, default 60), when the
+when ``DelegateNetworkConfigurationToSystem`` is ``true`` and the ``system`` provider's
+**configure_network** answers ``Failed``/``Rejected`` or answers ``Processing``
+without publishing **configure_network_status** within
+``InternalCtrlr``/``NetworkConfigTimeout`` seconds (default 60), when the
 resulting profile is invalid, or when the websocket connection fails
 ``OCPPCommCtrlr``/``NetworkProfileConnectionAttempts`` times in a row. Setting
 ``NetworkProfileConnectionAttempts`` to ``-1`` means retry-forever and thereby
 disables the websocket-failure-driven part of the failover; only do that
 deliberately. There is no automatic fall-back to a higher-priority slot while a
-lower-priority one is connected. The address the ``system`` provider returns
-from **configure_network** is what the websocket is bound to for that attempt.
+lower-priority one is connected. With ``DelegateNetworkConfigurationToSystem`` the
+address the ``system`` provider returns from **configure_network** is what the
+websocket is bound to for that attempt; without it no provider request is made.
+
+The **configure_network** command itself is called synchronously on libocpp's
+connectivity thread, so a provider that does not answer the command at all is
+bounded by the EVerest framework command timeout (300 seconds), not by
+``NetworkConfigTimeout``. Each connection attempt then blocks for that long
+before the slot is retried, which is why the flag must only be enabled with a
+provider (and, for ``system_API``, an external client) that answers promptly.
 
 Profiles with a ``SecurityProfile`` below the *confirmed* security profile -
 the ``SecurityCtrlr``/``SecurityProfile`` value, which is raised only after a
@@ -851,10 +1044,16 @@ above prepares a spare slot first:
   ``NetworkConfigurationPriority``, are rejected with ``PriorityNetworkConf``.
   Keep at least one slot out of the priority list so there is always a slot you
   can rewrite.
-- A ``NetworkConfigurationPriority`` write naming a slot without a complete
-  profile is rejected with ``InvalidNetworkConf``, as is a change that would
-  make a slot's URL scheme inconsistent with its security profile (``ws://``
-  needs profile < 2, ``wss://`` needs >= 2).
+- A ``NetworkConfigurationPriority`` write that adds a slot without a complete
+  profile, or whose URL scheme does not match its security profile (``ws://``
+  needs profile < 2, ``wss://`` needs >= 2), is rejected with
+  ``InvalidNetworkConf``. OCPP 1.6 also rejects a single-variable write that
+  would make a complete slot inconsistent, see below.
+- In OCPP 2.x, a ``NetworkConfigurationPriority`` write is also rejected with
+  ``InvalidNetworkConf`` if a listed slot has a security profile above the
+  confirmed one and the certificates it needs are missing: a CSMS root
+  certificate for profile 2 or 3, a ChargingStationCertificate for profile 3.
+  In OCPP 2.1, a write that only removes slots is always accepted (B09.FR.20).
 - Lowering a slot's ``SecurityProfile`` below the confirmed one is rejected
   with ``NoSecurityDowngrade``.
 
@@ -898,6 +1097,11 @@ Where the protocol versions differ
   listed slot and simply skips incomplete ones. See
   :ref:`Network connection profiles (OCPP 1.6) <handwritten_ocppmulti_network-profiles-ocpp16>`
   for the details.
+- **Slot consistency.** OCPP 1.6 checks URL scheme against security profile on
+  every single-variable write to a complete slot, so the variables must be
+  written in an order that keeps the slot consistent. OCPP 2.x stores writes
+  to a slot outside the priority list as they are (B09.FR.23) and checks the
+  slot when it is added to ``NetworkConfigurationPriority``.
 - **Deprecated key-only writes.** Only in OCPP 1.6 mode, the legacy
   ``SecurityProfile`` and ``AuthorizationKey`` keys can still be written
   (empty component name); they act on the active slot and bypass the validation
@@ -924,7 +1128,24 @@ Monitoring configuration changes
    ]}
 
 Legacy-form registrations (empty component name) receive legacy-shaped events.
-Registrations are additive across calls.
+Registrations are additive across calls. Changes to write-only variables (e.g.
+``BasicAuthPassword``) are published with an empty value.
+
+``monitor_and_get_variables`` takes the same request, registers the same
+monitors and additionally returns the current values in the reply (same result
+shape, order and echo semantics as ``get_variables``). The monitors are
+registered before the values are read, so no update is lost: every change from
+registration on is published as ``event_data``, and the returned value
+reflects the variable's state at some point after registration. The reply is
+not ordered against the event stream, however: a change around the call may
+show up both in the reply and as an event, and an event may arrive before the
+reply does. Treat ``event_data`` as authoritative for a variable once its
+first event arrived; use the returned value only until then. Use the command
+at startup to register monitors and obtain the initial values in a single
+call, without losing an update between the first read and the monitor
+registration.
+
+.. _handwritten_ocppmulti_migration-from-ocpp16-key-addressing:
 
 Migration from OCPP 1.6 key addressing
 ======================================

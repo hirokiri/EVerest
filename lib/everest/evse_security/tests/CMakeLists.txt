@@ -11,6 +11,7 @@ find_package(OpenSSL REQUIRED)
 target_link_libraries(${TEST_TARGET_NAME} PRIVATE
     evse_security
     GTest::gtest_main
+    OpenSSL::Crypto
 )
 
 if(USING_TPM2)
@@ -32,7 +33,7 @@ add_compile_definitions(BUILD_TESTING_EVSE_SECURITY)
 add_compile_definitions(DEBUG_MODE_EVSE_SECURITY)
 
 set(LIBEVSE_SECURITY_TEST_DIR "${CMAKE_BINARY_DIR}")
-if (EVEREST_CORE_BUILD_TESTING)
+if (BUILD_TESTING)
     set(LIBEVSE_SECURITY_TEST_DIR "${CMAKE_BINARY_DIR}/lib/everest/evse_security")
 endif()
 
@@ -46,6 +47,7 @@ file(COPY
     "${CMAKE_CURRENT_SOURCE_DIR}/generate_test_certs.sh"
     "${CMAKE_CURRENT_SOURCE_DIR}/generate_test_certs_root_multi.sh"
     "${CMAKE_CURRENT_SOURCE_DIR}/generate_test_certs_leaf_multi.sh"
+    "${CMAKE_CURRENT_SOURCE_DIR}/generate_test_certs_leaf_dual_algorithm.sh"
     DESTINATION "${LIBEVSE_SECURITY_TEST_DIR}/tests"
 )
 

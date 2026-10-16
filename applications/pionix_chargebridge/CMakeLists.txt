@@ -1,15 +1,3 @@
-cmake_minimum_required(VERSION 3.16)
-
-# MQTT support in everest::io is mandatory for this application. everest::io exports no property to
-# query it, so the cache variable (declared in the top level CMakeLists.txt, default ON) is the only
-# signal; if it is not defined at all, MQTT support is assumed to be present. As with ftxui below,
-# skip only this application instead of failing the whole project configuration.
-if(DEFINED EVEREST_IO_WITH_MQTT AND NOT EVEREST_IO_WITH_MQTT)
-    message(WARNING "Not building pionix_chargebridge because everest::io is built without MQTT support. "
-            "Set EVEREST_IO_WITH_MQTT=ON or disable EVEREST_BUILD_APPLICATIONS.")
-    return()
-endif()
-
 # ftxui powers the interactive terminal status UI and is mandatory for this application. It is
 # provided either by the dependency manager (EVEREST_DEPENDENCY_ENABLED_FTXUI) or, for system
 # dependency builds, by find_package(ftxui 6 QUIET) in the top level CMakeLists.txt. If it is not
@@ -85,6 +73,38 @@ add_custom_command(
   COMMENT "Copying Pionix ChargeBridge firmware binary..."
 )
 
+
+if(BUILD_TESTING)
+    # The carrier decision and the uptime reboot detection are pure functions in headers, so this
+    # needs neither the application's objects nor any of its dependencies - only the include paths for
+    # the headers and the mirrored protocol definitions they read CbLinkTechnology from.
+    add_executable(pionix_chargebridge_tests
+      test/bsp_status_test.cpp
+      test/carrier_policy_test.cpp
+      test/cb_role_test.cpp
+      test/mcs_bsp_test.cpp
+      test/heartbeat_reply_test.cpp
+      test/mcu_uptime_test.cpp
+      test/plc_keepalive_test.cpp
+    )
+
+    target_include_directories(pionix_chargebridge_tests
+      PRIVATE include
+      PRIVATE shared
+    )
+
+    # heartbeat_reply_test pins the CbStructType message ids down with a switch that has no default
+    # arm, so an enumerator added to the protocol without being added to the test's list makes that
+    # switch non-exhaustive. Promoting that warning to an error here is what turns it into a gate.
+    target_compile_options(pionix_chargebridge_tests PRIVATE -Werror=switch)
+
+    target_link_libraries(pionix_chargebridge_tests
+      PRIVATE GTest::gtest_main
+    )
+
+    include(GoogleTest)
+    gtest_discover_tests(pionix_chargebridge_tests TEST_PREFIX "pionix_chargebridge.")
+endif()
 
 install (TARGETS pionix_chargebridge)
 install (FILES "${CMAKE_CURRENT_SOURCE_DIR}/${cb_firmware_binary}" DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/chargebridge/firmware)

@@ -37,11 +37,15 @@ class ConfigServiceCore;
 } // namespace Everest
 struct TypedHandler;
 
-class ManagerAdminPanel;
-
 struct ModuleShutdownInfo {
     std::string id;
     int wstatus;
+};
+
+// Data structure to keep MQTT Last-Will-and-Testament related items together
+struct LwtCfg {
+    std::string topic;
+    std::string data;
 };
 
 /// @file manager.hpp
@@ -51,7 +55,7 @@ struct ModuleShutdownInfo {
 /// config service.
 /// `ShutdownCause` records **why** a shutdown or drain was started; it is kept across transient
 /// states (for example through `ForceTerminating` / `ShutdownFinalizing`) so the next step can
-/// distinguish normal stop, admin-driven restart, and crash recovery.
+/// distinguish normal stop, requested restart, and crash recovery.
 ///
 /// The full lifecycle description lives in `docs/source/explanation/manager-lifecycle.rst`,
 /// the state machine diagram in
@@ -64,6 +68,16 @@ enum class ShutdownCause {
     Normal,
     Restart,
     Crash
+};
+
+/// \brief Deferred lifecycle-API intent recorded on the MQTT thread and consumed by the main loop.
+///
+/// The LifecycleAPI stop/restart command handlers run on an MQTT worker thread. Stop/Restart
+/// are mutually exclusive, so a single atomic with last-writer-wins semantics is sufficient.
+enum class LifecycleApiRequest {
+    None,
+    Stop,
+    Restart
 };
 
 class Manager {
@@ -122,8 +136,10 @@ private:
 
     /// \brief Create MQTT abstraction, connect, and spawn its main loop thread.
     /// \param ms Fully resolved manager settings for this run.
+    /// \param lwt_cfg Optional Last-Will-and-Testament
     /// \return Connected MQTT abstraction, or nullptr on connection failure.
-    std::unique_ptr<Everest::MQTTAbstraction> create_and_connect_mqtt(const Everest::ManagerSettings& ms) const;
+    std::unique_ptr<Everest::MQTTAbstraction> create_and_connect_mqtt(const Everest::ManagerSettings& ms,
+                                                                      std::optional<LwtCfg> lwt_cfg) const;
 
     /// \brief Collect standalone module ids from config plus CLI overrides.
     /// \param config Validated manager configuration for this run.
@@ -150,6 +166,13 @@ private:
     /// \brief cleanup_modules_state() for paths that can also run without a configuration: does
     /// nothing when ctx.config is null, the state a boot with no valid configuration leaves behind.
     void cleanup_modules_state_if_configured(const RuntimeContext& ctx);
+
+    /// \brief SIGKILL every module process still tracked in m_module_handles, if any.
+    ///
+    /// The teardown net behind ModuleProcessGuard in run(): a no-op on the paths that already drained
+    /// or killed their modules, so a warning from here means an exit skipped module teardown. noexcept
+    /// because it runs from a destructor, including while an exception unwinds out of run().
+    void sigkill_remaining_modules() noexcept;
 
     /// \brief Terminate remaining module processes (SIGTERM, then SIGKILL fallback).
     void shutdown_modules(const std::map<pid_t, std::string>& modules, const Everest::ManagerConfig& config,
@@ -190,8 +213,6 @@ private:
     bool are_modules_started() const;
     /// \brief True when manager is in any shutdown-related state.
     bool is_in_shutdown_flow_state() const;
-    /// \brief True when restart has been requested.
-    bool is_restart_requested() const;
     /// \brief True when in idle.
     bool is_idle() const;
 
@@ -200,9 +221,12 @@ private:
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     /// \brief Handle module startup: transition to StartingModules, register ready handlers, and spawn modules.
+    ///
+    /// Records each spawned child pid in m_module_handles as it is forked, rather than assigning the
+    /// whole mapping on success, so a throw partway through the spawn still leaves every already-forked
+    /// process visible to ModuleProcessGuard in run(). Requires m_module_handles to be empty on entry.
     /// \param ctx Runtime dependencies for the current run.
-    /// \return Mapping of spawned child pid to module id.
-    std::map<pid_t, std::string> handle_start_modules(const RuntimeContext& ctx);
+    void handle_start_modules(const RuntimeContext& ctx);
 
     /// \brief Settle into Idle after a failed start or reload, logging \p reason and reporting
     /// FailedToStart to the Configuration API. Shared by the boot and restart paths.
@@ -219,18 +243,16 @@ private:
 
     /// \brief Advance lifecycle state when current phase is complete.
     /// \param ctx Runtime dependencies for the current run.
-    /// \param admin_panel Controller IPC/process integration helper.
     /// \return Result containing transition/exit outcome for this evaluation step.
-    LifecycleAdvanceResult advance_lifecycle_state_if_ready(RuntimeContext& ctx, ManagerAdminPanel& admin_panel);
+    LifecycleAdvanceResult advance_lifecycle_state_if_ready(RuntimeContext& ctx);
 
     /// \brief Complete shutdown finalization according to preserved restart/crash intent.
     /// \param ctx Runtime dependencies for the current run.
-    /// \param admin_panel Controller IPC/process integration helper.
     /// \param restart_requested Preserved restart intent for this finalization step.
     /// \param crash_in_progress Preserved crash-recovery intent for this finalization step.
     /// \return Exit code when manager should terminate, std::nullopt otherwise.
-    std::optional<int> handle_finalize_shutdown_transition(RuntimeContext& ctx, ManagerAdminPanel& admin_panel,
-                                                           bool restart_requested, bool crash_in_progress);
+    std::optional<int> handle_finalize_shutdown_transition(RuntimeContext& ctx, bool restart_requested,
+                                                           bool crash_in_progress);
 
     /// \brief Outcome of a module restart after a completed drain.
     enum class RestartOutcome {
@@ -256,23 +278,32 @@ private:
     /// \return std::nullopt for callers that return std::optional<int>.
     std::optional<int> transition_to_idle_after_shutdown(std::string_view log_message);
 
-    /// \brief Disconnect controller and MQTT, optionally reset shutdown state, transition to Exiting.
+    /// \brief Transition to Exiting, then publish the final lifecycle status and disconnect MQTT.
     /// \return Process exit code for the caller.
-    int transition_to_exiting_after_shutdown(RuntimeContext& ctx, ManagerAdminPanel& admin_panel, int exit_code,
-                                             bool reset_state);
+    int transition_to_exiting_after_shutdown(RuntimeContext& ctx, int exit_code, bool reset_state);
+
+    /// \brief Publish the final lifecycle status (at most once) and disconnect MQTT before the
+    ///        manager process exits.
+    ///
+    /// The publish must happen immediately before the disconnect: see
+    /// LifecycleAPI::publish_shutdown_status() for why that ordering is load-bearing. Keeping it in
+    /// here rather than at the call sites means no exit path can forget it; and since only exit
+    /// paths call this - module restarts keep the connection - it cannot fire on a restart.
+    ///
+    /// Publishes only when --lifecycle-api was given: without that gate a run without the lifecycle
+    /// API would create that retained topic out of nowhere on exit.
+    void publish_final_status_and_disconnect(Everest::MQTTAbstraction& mqtt_abstraction);
 
     /// \brief Finalize normal shutdown and decide exit vs idle outcome.
     /// \param ctx Runtime dependencies for the current run.
-    /// \param admin_panel Controller IPC/process integration helper.
     /// \return EXIT_SUCCESS/EXIT_FAILURE when manager exits, std::nullopt for idle mode.
-    std::optional<int> handle_finish_normal_shutdown(RuntimeContext& ctx, ManagerAdminPanel& admin_panel);
+    std::optional<int> handle_finish_normal_shutdown(RuntimeContext& ctx);
 
     /// \brief Finalize crash-recovery shutdown path.
     /// \param ctx Runtime dependencies for the current run.
-    /// \param admin_panel Controller IPC/process integration helper.
     /// \return EXIT_FAILURE when manager exits after crash (default), std::nullopt when staying idle
     ///         (`--recover-module-crashes` and restart cap exceeded).
-    std::optional<int> handle_finish_crash_recovery(RuntimeContext& ctx, ManagerAdminPanel& admin_panel);
+    std::optional<int> handle_finish_crash_recovery(RuntimeContext& ctx);
 
     /// \brief Start the shutdown flow; publishes the shutdown topic when graceful shutdown is
     ///        enabled (`--graceful-shutdown`), otherwise modules are force-terminated by the
@@ -295,47 +326,47 @@ private:
     /// \brief Poll waitpid once and dispatch child exit handling.
     /// \param wstatus waitpid status output parameter.
     /// \param ctx Runtime dependencies for the current run.
-    /// \param admin_panel Controller IPC/process integration helper.
     /// \return true when loop should short-circuit/continue after handling.
-    bool handle_waitpid_event(int& wstatus, RuntimeContext& ctx, ManagerAdminPanel& admin_panel);
+    bool handle_waitpid_event(int& wstatus, RuntimeContext& ctx);
 
     /// \brief Handle one child exit and update shutdown/restart state.
     /// \param pid Exited child process id.
     /// \param wstatus waitpid status for the exited child.
     /// \param ctx Runtime dependencies for the current run.
-    /// \param admin_panel Controller IPC/process integration helper.
     /// \return true when loop should short-circuit/continue after handling.
-    bool handle_child_exit(pid_t pid, int wstatus, RuntimeContext& ctx, ManagerAdminPanel& admin_panel);
-
-    /// \brief Poll controller IPC commands (restart/check-config).
-    /// \param ctx Runtime dependencies for the current run.
-    /// \param admin_panel Controller IPC/process integration helper.
-    /// \param prefix_opt Prefix passed to config-check requests.
-    /// \return Exit code when manager should terminate, std::nullopt otherwise.
-    std::optional<int> handle_controller_ipc_poll(RuntimeContext& ctx, ManagerAdminPanel& admin_panel,
-                                                  const std::string& prefix_opt);
+    bool handle_child_exit(pid_t pid, int wstatus, RuntimeContext& ctx);
 
     /// \brief Handle SIGINT/SIGTERM transition and optional immediate exit.
     /// \param signo Signal number received by polling.
     /// \param ctx Runtime dependencies for the current run.
-    /// \param admin_panel Controller IPC/process integration helper.
     /// \return Exit code when manager should terminate, std::nullopt otherwise.
-    std::optional<int> handle_signal(int signo, RuntimeContext& ctx, ManagerAdminPanel& admin_panel);
+    std::optional<int> handle_signal(int signo, RuntimeContext& ctx);
 
     /// \brief Poll signal fd and forward handled signals to handle_signal().
     /// \param signal_polling Signal polling abstraction used by manager loop.
     /// \param ctx Runtime dependencies for the current run.
-    /// \param admin_panel Controller IPC/process integration helper.
     /// \return Exit code when manager should terminate, std::nullopt otherwise.
-    std::optional<int> handle_signal_poll(Everest::system::SignalPolling& signal_polling, RuntimeContext& ctx,
-                                          ManagerAdminPanel& admin_panel);
+    std::optional<int> handle_signal_poll(Everest::system::SignalPolling& signal_polling, RuntimeContext& ctx);
 
-    /// \brief Main-loop signal poll timeout: short while deadlines are running or controller IPC
-    ///        needs polling, long otherwise (SIGINT/SIGTERM/SIGCHLD wake the poll immediately).
+    /// \brief Main-loop signal poll timeout: short while deadlines are running, long otherwise
+    ///        (SIGINT/SIGTERM/SIGCHLD wake the poll immediately).
     int signal_poll_timeout_ms() const;
+
+    /// \brief True when --lifecycle-api was given, i.e. the lifecycle status topic is in use.
+    ///
+    /// Recomputed from m_vm rather than cached: the last-will registration, the LifecycleAPI
+    /// construction and the final shutdown status must all agree on this predicate.
+    bool lifecycle_api_active() const;
 
     /// \brief Register a callback invoked on every state transition with (old_state, new_state).
     void register_state_transition_handler(std::function<void(ManagerState, ManagerState)> handler);
+
+    /// \brief Wake the main-loop poll after recording a lifecycle-API request (MQTT-thread safe).
+    void poke_lifecycle_wakeup();
+
+    /// \brief Consume a deferred lifecycle-API stop/restart request on the main loop.
+    /// \param ctx Runtime dependencies for the current run.
+    void handle_lifecycle_api_request(RuntimeContext& ctx);
 
     const boost::program_options::variables_map& m_vm;
     Everest::StatusFifo* m_status_fifo{nullptr};
@@ -353,6 +384,19 @@ private:
     std::atomic<ManagerState> m_state{ManagerState::Idle};
     ShutdownCause m_shutdown_cause{ShutdownCause::None};
     std::atomic<bool> m_sigint_received{false};
+    // Deferred lifecycle-API intent: set on the MQTT worker thread by the stop/restart command
+    // handlers, consumed on the main loop by handle_lifecycle_api_request(). Keeps all mutation of
+    // m_module_handles/shutdown_* on the main thread. Last-writer-wins (Stop/Restart exclusive).
+    std::atomic<LifecycleApiRequest> m_lifecycle_api_request{LifecycleApiRequest::None};
+    // eventfd owned by run(): the MQTT stop/restart handlers write to it after setting
+    // m_lifecycle_api_request to wake up the main-loop poll() immediately.
+    // -1 when not yet created / after run() returns. Atomic because the MQTT worker thread reads it
+    // in poke_lifecycle_wakeup() while the main thread creates/closes it in run().
+    std::atomic<int> m_lifecycle_wakeup_fd{-1};
+    // Latch for publish_final_status_and_disconnect(): the exiting paths publish the final lifecycle
+    // status explicitly, and run()'s exit guard publishes it again for the paths that leave by
+    // throwing. Main thread only (all exits from run() unwind there).
+    bool m_final_lifecycle_status_published{false};
     // Unexpected-exit recovery attempts for this manager process lifetime (current config).
     // Not cleared on transition to Running; resets when run() starts (future: also on config change).
     std::uint8_t m_unexpected_module_exit_count{0};

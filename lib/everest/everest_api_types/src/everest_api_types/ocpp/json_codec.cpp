@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 - 2025 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 
 #include "ocpp/json_codec.hpp"
 #include "nlohmann/json.hpp"
@@ -497,6 +497,7 @@ void to_json(json& j, OcppTransactionEvent const& k) noexcept {
     j = json{
         {"transaction_event", k.transaction_event},
         {"session_id", k.session_id},
+        {"timestamp", k.timestamp},
     };
     set_json_optional(evse);
     set_json_optional(transaction_id);
@@ -505,6 +506,7 @@ void to_json(json& j, OcppTransactionEvent const& k) noexcept {
 void from_json(const json& j, OcppTransactionEvent& k) {
     set_obj(transaction_event);
     set_obj(session_id);
+    set_obj(timestamp);
     set_obj_optional(evse);
     set_obj_optional(transaction_id);
 }

@@ -18,7 +18,7 @@ target_sources(everest_helpers
         src/phase_rotation.cpp
 )
 
-if (EVEREST_CORE_BUILD_TESTING AND EVEREST_ENABLE_COVERAGE)
+if (BUILD_TESTING AND EVEREST_ENABLE_COVERAGE)
     target_compile_definitions(everest_helpers PUBLIC EVEREST_COVERAGE_ENABLED)
 endif()
 
@@ -52,25 +52,18 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
 )
 
 if (BUILD_TESTING)
+    # LD_PRELOAD shim that lets integration tests advance a module's monotonic clock
+    add_library(everest_clockshift SHARED src/clockshift.cpp)
+    target_compile_features(everest_clockshift PRIVATE cxx_std_17)
+    target_link_libraries(everest_clockshift PRIVATE ${CMAKE_DL_LIBS})
+    install(TARGETS everest_clockshift LIBRARY DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/everest/testing)
+
     add_subdirectory(tests)
 endif()
 
-if(DISABLE_EDM)
-    install(
-        TARGETS
-            everest_helpers
-        EXPORT everest-helpers-targets
-        LIBRARY
-    )
-
-    evc_setup_package(
-        NAME everest-helpers
-        EXPORT everest-helpers-targets
-        NAMESPACE everest
-        ADDITIONAL_CONTENT
-            "find_dependency(everest-tls)"
-            "find_dependency(nlohmann_json)"
-            "find_dependency(nlohmann_json_schema_validator)"
-            "find_dependency(fmt)"
-    )
-endif()
+install(
+    TARGETS
+        everest_helpers
+    EXPORT everest-core-targets
+    LIBRARY
+)

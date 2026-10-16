@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 - 2025 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 
 /** \file */
 
@@ -27,6 +27,12 @@ public:
      * @brief Type of the payload for TX and RX operations
      */
     using PayloadT = std::vector<uint8_t>;
+
+    /**
+     * @var supports_tx_coalescing
+     * @brief Byte stream, \ref tx leaves exactly the unsent bytes in the payload.
+     */
+    static constexpr bool supports_tx_coalescing{true};
 
     /**
      * @brief The class is default constructed

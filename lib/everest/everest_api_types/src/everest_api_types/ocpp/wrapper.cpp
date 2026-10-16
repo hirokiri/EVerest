@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 - 2025 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 
 #include "ocpp/wrapper.hpp"
 #include "ocpp/API.hpp"
@@ -626,6 +626,7 @@ OcppTransactionEvent_Internal to_internal_api(OcppTransactionEvent_External cons
     result.session_id = val.session_id;
     result.evse = optToInternal(val.evse);
     result.transaction_id = val.transaction_id;
+    result.timestamp = val.timestamp;
     return result;
 }
 
@@ -635,6 +636,7 @@ OcppTransactionEvent_External to_external_api(OcppTransactionEvent_Internal cons
     result.session_id = val.session_id;
     result.evse = optToExternal(val.evse);
     result.transaction_id = val.transaction_id;
+    result.timestamp = val.timestamp;
     return result;
 }
 

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 - 2025 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 
 #include "powermeterImpl.hpp"
 
 #include "Timeout.hpp"
-#include <fmt/core.h>
+#include <fmt/format.h>
 
 namespace {
 inline std::uint16_t get_u16(const std::vector<std::uint8_t>& vec, std::uint8_t start_index) {

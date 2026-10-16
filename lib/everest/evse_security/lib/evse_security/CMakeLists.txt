@@ -21,6 +21,7 @@ if (LIBEVSE_CRYPTO_SUPPLIER_OPENSSL)
     target_sources(evse_security
         PRIVATE
             crypto/openssl/openssl_crypto_supplier.cpp
+            crypto/openssl/openssl_iso20.cpp
             crypto/openssl/openssl_provider.cpp
     )
 endif()
@@ -83,21 +84,9 @@ target_link_libraries(evse_security
         OpenSSL::Crypto
 )
 
-if(LIBEVSE_SECURITY_BUILD_TESTING)
+if(BUILD_TESTING)
     target_compile_definitions(evse_security PRIVATE
         DEBUG_MODE_EVSE_SECURITY
-    )
-endif()
-
-if(LIBEVSE_SECURITY_USE_BOOST_FILESYSTEM)
-    find_package(Boost REQUIRED COMPONENTS filesystem)
-    target_link_libraries(evse_security
-        PRIVATE
-            Boost::filesystem
-    )
-    target_compile_definitions(evse_security
-        PRIVATE
-            LIBEVSE_SECURITY_USE_BOOST_FILESYSTEM
     )
 endif()
 

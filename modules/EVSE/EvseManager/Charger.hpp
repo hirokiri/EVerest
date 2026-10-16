@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 - 2021 Pionix GmbH and Contributors to EVerest
+// Copyright Pionix GmbH and Contributors to EVerest
 /*
  * Charger.h
  *
@@ -67,6 +67,34 @@ public:
         DC
     };
 
+    struct ReinitConfiguration {
+        std::string state_transition;
+        int duration;
+    };
+
+    struct SetupConfig {
+        bool has_ventilation{false};
+        ChargeMode charge_mode{ChargeMode::AC};
+        bool ac_hlc_enabled{false};
+        bool ac_hlc_use_5percent{false};
+        bool ac_enforce_hlc{false};
+        bool ac_limit_slac_init_retries{true};
+        bool ac_with_soc_timeout{false};
+        float soft_over_current_tolerance_percent{0};
+        float soft_over_current_measurement_noise_A{0};
+        int switch_3ph1ph_delay_s{0};
+        std::string switch_3ph1ph_cp_state{};
+        int soft_over_current_timeout_ms{0};
+        int state_F_after_fault_ms{0};
+        int reinit_duration_ms{0};
+        std::string reinit_method{};
+        bool fail_on_powermeter_errors{false};
+        bool raise_mrec9{false};
+        int sleep_before_enabling_pwm_hlc_mode_ms{0};
+        utils::SessionIdType session_id_type{utils::SessionIdType::UUID};
+        int hlc_charge_loop_without_energy_timeout_s{0};
+    };
+
     enum class EvseState {
         Disabled,
         Idle,
@@ -79,6 +107,7 @@ public:
         Finished,
         T_step_EF,
         T_step_X1,
+        Reinit,
         SwitchPhases
     };
 
@@ -100,13 +129,7 @@ public:
 
     sigslot::signal<float> signal_max_current;
 
-    void setup(bool has_ventilation, const ChargeMode charge_mode, bool ac_hlc_enabled, bool ac_hlc_use_5percent,
-               bool ac_enforce_hlc, bool ac_with_soc_timeout, float soft_over_current_tolerance_percent,
-               float soft_over_current_measurement_noise_A, const int switch_3ph1ph_delay_s,
-               const std::string switch_3ph1ph_cp_state, const int soft_over_current_timeout_ms,
-               const int _state_F_after_fault_ms, const bool fail_on_powermeter_errors, const bool raise_mrec9,
-               const int sleep_before_enabling_pwm_hlc_mode_ms, const utils::SessionIdType session_id_type,
-               const int hlc_charge_loop_without_energy_timeout_s);
+    void setup(const SetupConfig& config);
 
     void enable_disable_initial_state_publish();
     bool enable_disable(int connector_id, const types::evse_manager::EnableDisableSource& source);
@@ -118,9 +141,12 @@ public:
 
     // Returns active session_uuid. Returns empty string if not session is active
     std::string get_session_id() const;
+    void set_supports_cp_state_E(bool value);
 
     // call when in state WaitingForAuthentication
-    void authorize(bool a, const types::authorization::ProvidedIdToken& token,
+    // Returns false if the authorization was ignored because the session was externally cancelled or a disable is
+    // pending.
+    bool authorize(bool a, const types::authorization::ProvidedIdToken& token,
                    const types::authorization::ValidationResult& result);
     bool deauthorize();
 
@@ -133,6 +159,7 @@ public:
 
     // trigger replug sequence while charging to switch number of phases
     bool switch_three_phases_while_charging(bool n);
+    bool start_reinit();
 
     bool pause_charging();
     bool resume_charging();
@@ -161,6 +188,7 @@ public:
 
     sigslot::signal<> signal_hlc_stop_charging;
     sigslot::signal<> signal_hlc_pause_charging;
+    sigslot::signal<> signal_hlc_resume_charging;
     sigslot::signal<types::iso15118::EvseError> signal_hlc_error;
     sigslot::signal<> signal_hlc_plug_in_timeout;
 
@@ -171,6 +199,8 @@ public:
     void request_error_sequence();
 
     void set_matching_started(bool m);
+    void set_slac_matched(bool matched);
+    void set_dlink_ready(bool ready);
 
     void notify_currentdemand_started();
     void reset_dc_enforce_target_limits_timer();
@@ -188,12 +218,36 @@ public:
 
     void dlink_pause();
     void dlink_error();
-    void dlink_terminate();
+    // Returns true if the terminate was a data link loss during session setup and was handled as a D-LINK_ERROR;
+    // the caller then forwards a D-LINK_ERROR rather than a D-LINK_TERMINATE to the data link layer.
+    bool dlink_terminate();
+
+    // A positive SessionStopRes was sent to the EV: remember terminate/pause and arm the
+    // CP-oscillator retain timer [V2G-DC-968] (PWM off V2G_SECC_CP_OSCILLATOR_RETAIN after the Res,
+    // independent of the EV's TCP close). The later dlink_terminate()/dlink_pause() still runs as
+    // today and applies a harmless second X1.
+    void notify_session_stop_res_sent(types::iso15118::SessionStopAction action);
+
+    // The EV opened a new V2G session (application protocol negotiated).
+    void notify_hlc_session_started_by_ev();
 
     void set_hlc_charging_active();
     void set_hlc_allow_close_contactor(bool on);
+    void dc_open_contactor_request();
+    void dc_renegotiation_started();
 
-    void set_hlc_d20_active();
+    void set_hlc_d20_active(bool dynamic_control_mode);
+
+    // The HLC stack notified the requested ISO 15118-20 pause to the EV.
+    void notify_hlc_pause_notified();
+
+    // Measured DC output current, for the zero-current check before an ISO 15118-20 pause.
+    void update_dc_present_current(float current_A);
+    // While StoppingCharging handles an ISO 15118-20 pause in dynamic control mode: when the ramp of the DC output
+    // to 0 A started. The caller caps the current setpoint accordingly, down to 0 A for the rest of the state.
+    std::optional<std::chrono::steady_clock::time_point> get_dc_pause_ramp_start();
+    // Rate of that ramp: the normal shutdown rate (IEC 61851-23 CC.3.3, at most 100 A/s).
+    static constexpr double D20_PAUSE_RAMP_AMPERE_PER_SECOND = 100.;
 
     bool stop_charging_on_fatal_error();
     bool entered_fatal_error_state();
@@ -243,15 +297,23 @@ private:
     void bcb_toggle_detect_start_pulse();
     void bcb_toggle_detect_stop_pulse();
     bool bcb_toggle_detected();
+    bool evse_pause_resumable() const;
+    void resume_evse_pause_marker();
 
     void clear_errors_on_unplug();
 
     void update_pwm_now(float duty_cycle);
+    bool pwm_signal_off() const;
+    void note_pwm_switched_off();
+    bool must_wait_in_x1_before_pwm();
     void update_pwm_now_if_changed(float duty_cycle);
     void update_pwm_now_if_changed_ampere(float duty_cycle);
     void update_pwm_max_every_5seconds_ampere(float duty_cycle);
     void cp_state_X1();
+    void cp_state_E();
     void cp_state_F();
+    void apply_configured_reinit_method();
+    void process_pending_reinit_request();
 
     void process_cp_events_independent(CPEvent cp_event);
     void process_cp_events_state(CPEvent cp_event);
@@ -273,8 +335,6 @@ private:
 
     bool start_transaction();
     void stop_transaction();
-
-    void process_event(CPEvent event);
 
     void set_state(EvseState s);
 
@@ -315,8 +375,15 @@ private:
         bool contactor_open{true};
         bool hlc_charging_active{false};
         HlcTerminatePause hlc_charging_terminate_pause;
-        types::iso15118::DcEvseMaximumLimits current_evse_max_limits;
-        types::iso15118::DcEvseMinimumLimits current_evse_min_limits;
+        // The HLC session was stopped by the EVSE for a pause (StoppingCharging -> ChargingPausedEVSE: user
+        // pause, no energy or error). The EV ends the session with SessionStop(Pause) on -20 or SessionStop
+        // (Terminate) on -2/DIN, which sets hlc_charging_terminate_pause. Unlike an EV-initiated stop, the EVSE
+        // resumes such a session itself via PrepareCharging once the pause reasons are gone.
+        bool hlc_session_paused_by_evse{false};
+        // ISO 15118-2 DC renegotiation (IEC 61851-23:2023 CC.3.6): the EV's C->B is not a stop.
+        bool hlc_dc_renegotiation{false};
+        types::iso15118::DcEvseMaximumLimits current_evse_max_limits{0, 0, 0, std::nullopt, std::nullopt};
+        types::iso15118::DcEvseMinimumLimits current_evse_min_limits{0, 0, 0, std::nullopt, std::nullopt};
         bool pwm_running{false};
         std::optional<types::authorization::ProvidedIdToken>
             stop_transaction_id_token; // only set in case transaction was stopped locally
@@ -329,6 +396,10 @@ private:
         // set to true if auth is from PnC, otherwise to false (EIM)
         bool authorized_pnc;
         bool matching_started;
+        std::atomic_bool slac_matched{false};
+        // D-LINK_READY(link established) was indicated since the session or the last error sequence started, and HLC
+        // has not reported the link lost since.
+        bool dlink_established{false};
         float max_current;
         std::chrono::time_point<std::chrono::steady_clock> max_current_valid_until;
         std::optional<double> max_current_cable;
@@ -352,34 +423,46 @@ private:
         bool contactor_welded{false};
         bool switch_3ph1ph_threephase{false};
         bool switch_3ph1ph_threephase_ongoing{false};
+        bool reinit_requested{false};
+        bool reinit_running{false};
+        ReinitConfiguration reinit_config{"CPStateF", 3000};
 
         std::optional<types::units_signed::SignedMeterValue> stop_signed_meter_value;
         std::optional<types::units_signed::SignedMeterValue> start_signed_meter_value;
 
         std::atomic_bool hlc_d20_active{false};
+        // ISO 15118-20 dynamic control mode: the EVSE sets the power, not the EV.
+        std::atomic_bool hlc_d20_dynamic_mode{false};
     } shared_context;
 
     struct ConfigContext {
         // non standard compliant option to enforce HLC in AC mode
-        bool ac_enforce_hlc;
+        bool ac_enforce_hlc{false};
+        // ISO15118-3 SLAC retries: at most C_SEQU_RETRY with 5 percent, then X1 ([V2G3-M06-07]); none without 5
+        // percent ([V2G3-A09-13])
+        bool ac_limit_slac_init_retries{true};
         // Config option to use 5 percent PWM in HLC AC mode
-        bool ac_hlc_use_5percent;
+        bool ac_hlc_use_5percent{false};
         // Config option to enable HLC in AC mode
-        bool ac_hlc_enabled;
+        bool ac_hlc_enabled{false};
         // AC or DC
         ChargeMode charge_mode{0};
         // Delay when switching from 1ph to 3ph or 3ph to 1ph
         int switch_3ph1ph_delay_s{10};
-        // Use state F if true, otherwise use X1
-        bool switch_3ph1ph_cp_state_F{false};
+        // CP state to use while switching phases
+        std::string switch_3ph1ph_cp_state{"X1"};
         // Tolerate soft over current for given time
         int soft_over_current_timeout_ms{7000};
         // Switch to F for configured ms after a fatal error
         int state_F_after_fault_ms{300};
+        // Duration in milliseconds of the reinit state before returning to normal operation
+        int reinit_duration_ms{3000};
+        // CP state to use during reinitialization
+        std::string reinit_method{"CPStateF"};
         // Fail on powermeter errors
-        bool fail_on_powermeter_errors;
+        bool fail_on_powermeter_errors{false};
         // Raise MREC9 authorization timeout error
-        bool raise_mrec9;
+        bool raise_mrec9{false};
         // sleep before enabling pwm in hlc mode
         int sleep_before_enabling_pwm_hlc_mode_ms{1000};
         // type used to generate session ids
@@ -392,10 +475,14 @@ private:
     // Used by different threads, but requires no complete state machine locking
     std::atomic<float> soft_over_current_tolerance_percent{10.};
     std::atomic<float> soft_over_current_measurement_noise_A{0.5};
+    std::atomic<float> dc_present_current_A{0.};
+    std::atomic_bool supports_cp_state_E{false};
     // HLC uses 5 percent signalling. Used both for AC and DC modes.
     std::atomic_bool hlc_use_5percent_current_session;
     // HLC enabled in current AC session. This can change during the session if e.g. HLC fails.
     std::atomic_bool ac_hlc_enabled_current_session;
+    // HLC failed for the current plug-in session. AC falls back to nominal PWM after this.
+    std::atomic_bool hlc_failed{false};
 
     // This struct is only used from main loop thread
     struct InternalContext {
@@ -414,6 +501,8 @@ private:
 
         EvseState t_step_X1_return_state;
         float t_step_X1_return_pwm;
+        // T_step_X1 after a lost data link: X1 lasts until the SLAC module is unmatched ([V2G3-M07-05..07]).
+        bool t_step_X1_until_unmatched{false};
         std::chrono::time_point<std::chrono::steady_clock> last_over_current_event;
         bool over_current{false};
 
@@ -428,6 +517,16 @@ private:
         bool t_step_ef_x1_pause{false};
         bool cp_state_F_active{false};
 
+        // Time at which a running PWM was switched off (X1 or 100 % duty cycle). IEC 61851-1:2017 Table A.6
+        // sequence 9.2 requires at least IEC_MIN_X1_BEFORE_PWM_MS in X1 before PWM is enabled again.
+        std::optional<std::chrono::time_point<std::chrono::steady_clock>> pwm_switched_off_at{};
+        bool min_x1_wait_logged{false};
+
+        // E/F matching retries in 5 percent mode since plug-in or the last match ([V2G3-M06-07])
+        int slac_retries{0};
+        // C_SEQU_RETRY retries done: 5 percent stays off until unplug, also with ac_enforce_hlc
+        bool slac_retries_exhausted{false};
+
         bool ac_x1_fallback_nominal_timeout_running{false};
         std::chrono::time_point<std::chrono::steady_clock> ac_x1_fallback_nominal_timeout_started;
         bool auth_received_printed{false};
@@ -438,8 +537,33 @@ private:
         std::chrono::time_point<std::chrono::steady_clock> fatal_error_became_active;
         bool fatal_error_timer_running{false};
         bool dc_statistics_printed{false};
+        bool reinit_timer_active{false};
+        std::chrono::time_point<std::chrono::steady_clock> reinit_deadline;
 
         types::evse_manager::ChargingPausedEVSEReasons last_charging_paused_evse_reasons;
+
+        // Armed by notify_session_stop_res_sent(); when it expires, the state machine switches the
+        // CP oscillator off (X1), whatever state it is in ([V2G-DC-968] retain time).
+        std::optional<std::chrono::time_point<std::chrono::steady_clock>> session_stop_pwm_off_deadline{};
+
+        // StoppingCharging was entered for a user pause (flag_paused_by_evse), even if resume_charging() has
+        // cleared that flag since.
+        bool stopping_for_evse_pause{false};
+        // How long StoppingCharging waits for the EV before the hard stop; chosen when the state is entered.
+        int stopping_charging_timeout_ms{STOPPING_CHARGING_TIMEOUT_MS};
+
+        // The EV reconnected to resume a session it had ended with a SessionStop; consumed by ChargingPausedEV.
+        bool hlc_session_restarted_by_ev{false};
+
+        // [V2G20-2115]: an ISO 15118-20 pause in dynamic control mode is only notified at 0 kW. Set while
+        // StoppingCharging ramps the output down; pause_notified once EVSENotification=Pause was requested.
+        std::optional<std::chrono::steady_clock::time_point> d20_pause_ramp_start;
+        bool d20_pause_notified{false};
+        // Scheduled control mode: the pause was requested from Charging and is held back by the HLC stack until the
+        // EV's power profile is at 0 kW [V2G20-1198]; confirmed once it has gone out.
+        bool d20_pause_requested{false};
+        bool d20_pause_confirmed{false};
+
     } internal_context;
 
     // main Charger thread
@@ -447,6 +571,9 @@ private:
     Everest::Thread error_thread_handle;
 
     std::atomic<std::chrono::steady_clock::time_point> last_dc_enforce_target_limits{};
+    // Snapshot of the -20 pause ramp start, updated by the state machine and read by get_dc_pause_ramp_start().
+    static constexpr auto NO_DC_PAUSE_RAMP = std::chrono::steady_clock::time_point::min();
+    std::atomic<std::chrono::steady_clock::time_point> dc_pause_ramp_start{NO_DC_PAUSE_RAMP};
 
     const std::unique_ptr<IECStateMachine>& bsp;
     const std::unique_ptr<ErrorHandling>& error_handling;
@@ -471,12 +598,25 @@ private:
         std::chrono::milliseconds(3500 + 200); // We give 200 msecs tolerance to the norm values (table 3 ISO15118-3)
     static constexpr auto MAINLOOP_UPDATE_RATE = std::chrono::milliseconds(100);
     static constexpr float PWM_5_PERCENT = 0.05;
+    // [V2G-DC-968] V2G_SECC_CPOscillator_Retain_Time: keep the 5% oscillator on for 1.5 s after
+    // sending SessionStopRes(OK), then switch it off. The DIN 70122 ATS accepts the off-transition
+    // in [1.5 s, 1.7 s] after the Res; with the 100 ms main-loop tick the X1 lands in
+    // [deadline, deadline + 100 ms], so 1550 ms centers it with >= 50 ms margin on both sides.
+    static constexpr auto V2G_SECC_CP_OSCILLATOR_RETAIN = std::chrono::milliseconds(1550);
     static constexpr int T_REPLUG_MS = 4000;
     // 3 seconds according to IEC61851-1
     static constexpr int T_STEP_X1 = 3000;
+    // 1 second according to table 3 of ISO15118-3: the time the node has to leave the logical network. An X1 for a lost
+    // data link is held at least this long so that the leave happens within X1 ([V2G3-M07-06]).
+    static constexpr int TP_MATCH_LEAVE_MS = 1000;
     // 4 seconds according to table 3 of ISO15118-3
     static constexpr int T_STEP_EF = 4000;
+    // C_sequ_retry according to table 3 of ISO15118-3
+    static constexpr int C_SEQU_RETRY = 2;
     static constexpr int IEC_PWM_MAX_UPDATE_INTERVAL = 5000;
+    // IEC 61851-1:2017 Table A.6 sequence 9.2: after switching PWM off at state B (B2->B1) the EVSE shall wait at
+    // least 3 s before it enables PWM again (sequence 3.1, B1->B2).
+    static constexpr int IEC_MIN_X1_BEFORE_PWM_MS = 3000;
     // EV READY certification requires a small pause of 500-1000 ms in X1 after a t_step_EF sequence before going to X2-
     // This is not required by IEC61851-1, but it is allowed by the IEC. It helps some older EVs to start charging
     // after the wake-up sequence.
@@ -484,6 +624,13 @@ private:
     static constexpr int WAIT_FOR_ENERGY_IN_AUTHLOOP_TIMEOUT_MS = 5000;
     static constexpr int AC_X1_FALLBACK_TO_NOMINAL_TIMEOUT_MS = 10000;
     static constexpr int STOPPING_CHARGING_TIMEOUT_MS = 20000;
+    // An ISO 15118-20 pause grants the EV NotificationMaxDelay, fixed at 60 s [V2G20-3308], to react before the
+    // EVSE may act on its own. Plus a margin for the EV's last charge loop round trip.
+    static constexpr int STOPPING_CHARGING_D20_PAUSE_TIMEOUT_MS = 65000;
+    // "No current drawn" [V2G20-2115] is taken as below 1 A. The timeout covers a ramp from 3000 A at
+    // D20_PAUSE_RAMP_AMPERE_PER_SECOND with a margin; a ramp that does not get there ends in the hard stop.
+    static constexpr float D20_PAUSE_ZERO_CURRENT_A = 1.0f;
+    static constexpr int D20_PAUSE_RAMP_TIMEOUT_MS = 35000;
     // Ensures apply_new_target_voltage_current() is called at least every DC_ENFORCE_TARGET_LIMITS_INTERVAL_MS
     // during DC charging. This re-applies EVSE limits to the power supply even when the EV does not send
     // new target values or ignores updated limits from energy management.
@@ -500,11 +647,18 @@ private:
 protected:
     // provide access for unit tests
     void run_state_machine();
+    void process_event(CPEvent event);
     constexpr auto& get_shared_context() {
         return shared_context;
     }
+    constexpr auto& get_internal_context() {
+        return internal_context;
+    }
     auto& get_hlc_use_5percent_current_session() {
         return hlc_use_5percent_current_session;
+    }
+    constexpr auto& get_config_context() {
+        return config_context;
     }
     constexpr const auto& get_enable_disable_source_table() const {
         return enable_disable_source_table;
